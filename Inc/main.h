@@ -86,17 +86,12 @@ void Error_Handler(void);
 #define STRAIN1_GPIO_Port GPIOC
 #define VBUS_S_Pin GPIO_PIN_0
 #define VBUS_S_GPIO_Port GPIOB
-#define M0_AH_Pin GPIO_PIN_9
-#define M0_AH_GPIO_Port GPIOE
 #define EN_GATE_Pin GPIO_PIN_14
 #define EN_GATE_GPIO_Port GPIOE
 #define M0_DC_CAL_Pin GPIO_PIN_15
 #define M0_DC_CAL_GPIO_Port GPIOE
-#define ROT0_A_U_Pin GPIO_PIN_6
-#define ROT0_A_U_GPIO_Port GPIOC
-#define ROT0_A_U_EXTI_IRQn EXTI9_5_IRQn
-#define GENERATOR_Pin GPIO_PIN_7
-#define GENERATOR_GPIO_Port GPIOC
+#define ROT0_nCS_Pin GPIO_PIN_15
+#define ROT0_nCS_GPIO_Port GPIOD
 #define PWRGD_Pin GPIO_PIN_4
 #define PWRGD_GPIO_Port GPIOD
 #define nOCTW_Pin GPIO_PIN_5
@@ -106,6 +101,18 @@ void Error_Handler(void);
 #define nSCS_Pin GPIO_PIN_7
 #define nSCS_GPIO_Port GPIOD
 /* USER CODE BEGIN Private defines */
+
+#define AS_ODD 0x8000
+#define AS_READ 0x4000
+#define AS_EVEN 0x0000
+#define AS_WRITE 0x0000
+#define AS_DATA_MASK 0x3FFF
+#define AS_ADDR_ZPOSM 0x0016
+#define AS_ADDR_ZPOSL 0x8017
+#define AS_ADDR_SETTINGS1 0x0018
+#define AS_ADDR_SETTINGS2 0x8019
+
+
 
 /* USER CODE END Private defines */
 
