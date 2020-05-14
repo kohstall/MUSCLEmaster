@@ -65,7 +65,11 @@ UART_HandleTypeDef huart3;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-
+int16_t EncVal;
+static const uint8_t IMU_ADDR = 0x68 << 1;
+static const uint8_t REG_ACCEL_H = 0x3B;
+static const uint8_t REG_ACCEL_L = 0x3C;
+static const uint8_t REG_POWER = 0x6B;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -102,7 +106,12 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 	uint8_t buf[20]; // see tutorial https://www.youtube.com/watch?v=isOekyygpR8
+
 	char ch;
+	HAL_StatusTypeDef ret;
+	int16_t accel16;
+	uint8_t accel8l;
+	uint8_t accel8h;
 
   /* USER CODE END 1 */
   
@@ -178,6 +187,37 @@ int main(void)
 
   HAL_TIM_Encoder_Start_IT(&htim8, TIM_CHANNEL_ALL );
 
+//  buf[0] = 0x6B;
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x00, 1, HAL_MAX_DELAY);
+//  HAL_Delay(2);
+
+//  buf[0] = 0x19;
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x04, 1, HAL_MAX_DELAY);
+//  HAL_Delay(2);
+//
+//  buf[0] = 0x1A;
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x02, 1, HAL_MAX_DELAY);
+//  HAL_Delay(2);
+//
+//  buf[0] = 0x1B;
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x18, 1, HAL_MAX_DELAY);
+//  HAL_Delay(2);
+//
+//  buf[0] = 0x6A;
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x03, 1, HAL_MAX_DELAY);
+//  HAL_Delay(2);
+//
+//  buf[0] = 0x6B;
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x01, 1, HAL_MAX_DELAY);
+//  HAL_Delay(2);
+
+
   while (1)
   {
   	// --- MODAL ----------------------------------------------------
@@ -189,6 +229,72 @@ int main(void)
   	//
   	//  	}
 
+  	// ---I2C2 IMU ------------------------------------------------
+  	//see: https://www.youtube.com/watch?v=isOekyygpR8
+  	//b1101000
+  	char accel_char[20];
+
+  	buf[0] = 0x6B;
+  	buf[1] = 0x00;
+		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 2, HAL_MAX_DELAY);
+		if (ret != HAL_OK){
+			strcpy((char*)buf, "Error IMU T\r\n");
+		} else {
+			buf[0] = 0x00;
+		}
+
+  	buf[0] = 0x41;
+  	ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+  	if (ret != HAL_OK){
+  		strcpy((char*)buf, "Error IMU T\r\n");
+  	} else {
+  		ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+			if (ret != HAL_OK){
+				strcpy((char*)buf, "Error IMU R\r\n");
+			} else {
+				accel8l = (int8_t)buf[0];
+				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+				//itoa(buf[0], accel_char, 10);
+			}
+
+  	}
+
+  	buf[0] = 0x42;
+		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+		if (ret != HAL_OK){
+			strcpy((char*)buf, "Error IMU T\r\n");
+		} else {
+			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+			if (ret != HAL_OK){
+				strcpy((char*)buf, "Error IMU R\r\n");
+			} else {
+				accel8l = (int8_t)buf[0];
+				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+				//itoa(buf[0], accel_char, 10);
+			}
+
+		}
+
+		//who am i WORKS
+
+		buf[0] = 0x75;
+				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+				if (ret != HAL_OK){
+					strcpy((char*)buf, "Error IMU T\r\n");
+				} else {
+					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+					if (ret != HAL_OK){
+						strcpy((char*)buf, "Error IMU R\r\n");
+					} else {
+						accel8l = (int8_t)buf[0];
+						//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+						//itoa(buf[0], accel_char, 10);
+					}
+
+				}
+
+
+
   	// --- SPI ----------------------------------------------------
   	//ROT0_nCS_GPIO_Port->BSRR = (uint32_t)ROT0_nCS_Pin << 16U;
 
@@ -196,6 +302,7 @@ int main(void)
   	uint16_t value = 0x0000;
 
   	// --- set ABI and enable PWM
+  	//TODO: Error handling
   	address = AS_ADDR_SETTINGS1 | AS_WRITE ;
   	value = 0x0080 | AS_ODD;
   	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
@@ -234,7 +341,7 @@ int main(void)
 		//Follow: http://www.emcu.eu/how-to-interface-the-rotary-encoder-to-stm32-cube-mx-atollic/
 		//I think for encoder mode, you should be using HAL_TIM_IC_CaptureCallback and HAL_TIM_Encoder_Start_IT.
 		//code? https://stm32f4-discovery.net/2014/08/library-26-rotary-encoder-stm32f4/
-		int16_t EncVal = TIM8->CNT;
+		EncVal = TIM8->CNT;
 
 
   	// --- GPIO ----------------------------------------------------
@@ -285,7 +392,7 @@ int main(void)
 
 	  HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
 
-	  sprintf((char*)buf, strcat(strcat(strcat(buffer0, "_"), strncat(buffer, &ch, 1)),"\r\n"));
+	  sprintf((char*)buf, strcat(strcat(strcat(strcat(buffer0, "_"), strncat(buffer, &ch, 1)),"#"), strcat(accel_char, "_\r\n")  ) );
 	  HAL_UART_Transmit(&huart3, buf, strlen((char*)buf), 1000);
 
 	  //HAL_UART_Receive(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
@@ -705,7 +812,6 @@ static void MX_TIM8_Init(void)
 
   TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_IC_InitTypeDef sConfigIC = {0};
 
   /* USER CODE BEGIN TIM8_Init 1 */
 
@@ -717,10 +823,6 @@ static void MX_TIM8_Init(void)
   htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim8.Init.RepetitionCounter = 0;
   htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_IC_Init(&htim8) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
@@ -737,14 +839,6 @@ static void MX_TIM8_Init(void)
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
-  if (HAL_TIM_IC_ConfigChannel(&htim8, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -961,11 +1055,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : ROT0_I_W_Pin */
+  GPIO_InitStruct.Pin = ROT0_I_W_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ROT0_I_W_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pins : PWRGD_Pin nOCTW_Pin nFAULT_Pin */
   GPIO_InitStruct.Pin = PWRGD_Pin|nOCTW_Pin|nFAULT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 }
 
@@ -987,6 +1091,16 @@ void delayMs(int delay){
 //		__NOP();
 //	}
 //}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+	if (GPIO_Pin == ROT0_I_W_Pin){
+		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+		TIM8->CNT = 0;     //TODO: there is acually some stepping happening under the I pulse so we have to distinguish between step from right and step from left
+	}
+	else{
+		__NOP();
+	}
+}
 /* USER CODE END 4 */
 
 /**

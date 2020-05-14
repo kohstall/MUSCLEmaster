@@ -533,15 +533,15 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
 }
 
 /**
-* @brief TIM_IC MSP Initialization
+* @brief TIM_Encoder MSP Initialization
 * This function configures the hardware resources used in this example
-* @param htim_ic: TIM_IC handle pointer
+* @param htim_encoder: TIM_Encoder handle pointer
 * @retval None
 */
-void HAL_TIM_IC_MspInit(TIM_HandleTypeDef* htim_ic)
+void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if(htim_ic->Instance==TIM8)
+  if(htim_encoder->Instance==TIM8)
   {
   /* USER CODE BEGIN TIM8_MspInit 0 */
 
@@ -552,10 +552,9 @@ void HAL_TIM_IC_MspInit(TIM_HandleTypeDef* htim_ic)
     __HAL_RCC_GPIOC_CLK_ENABLE();
     /**TIM8 GPIO Configuration    
     PC6     ------> TIM8_CH1
-    PC7     ------> TIM8_CH2
-    PC8     ------> TIM8_CH3 
+    PC7     ------> TIM8_CH2 
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8;
+    GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -714,14 +713,14 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* htim_base)
 }
 
 /**
-* @brief TIM_IC MSP De-Initialization
+* @brief TIM_Encoder MSP De-Initialization
 * This function freeze the hardware resources used in this example
-* @param htim_ic: TIM_IC handle pointer
+* @param htim_encoder: TIM_Encoder handle pointer
 * @retval None
 */
-void HAL_TIM_IC_MspDeInit(TIM_HandleTypeDef* htim_ic)
+void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
 {
-  if(htim_ic->Instance==TIM8)
+  if(htim_encoder->Instance==TIM8)
   {
   /* USER CODE BEGIN TIM8_MspDeInit 0 */
 
@@ -731,10 +730,9 @@ void HAL_TIM_IC_MspDeInit(TIM_HandleTypeDef* htim_ic)
   
     /**TIM8 GPIO Configuration    
     PC6     ------> TIM8_CH1
-    PC7     ------> TIM8_CH2
-    PC8     ------> TIM8_CH3 
+    PC7     ------> TIM8_CH2 
     */
-    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6|GPIO_PIN_7);
 
     /* TIM8 interrupt DeInit */
     HAL_NVIC_DisableIRQ(TIM8_BRK_TIM12_IRQn);

@@ -92,6 +92,9 @@ void Error_Handler(void);
 #define M0_DC_CAL_GPIO_Port GPIOE
 #define ROT0_nCS_Pin GPIO_PIN_15
 #define ROT0_nCS_GPIO_Port GPIOD
+#define ROT0_I_W_Pin GPIO_PIN_8
+#define ROT0_I_W_GPIO_Port GPIOC
+#define ROT0_I_W_EXTI_IRQn EXTI9_5_IRQn
 #define PWRGD_Pin GPIO_PIN_4
 #define PWRGD_GPIO_Port GPIOD
 #define nOCTW_Pin GPIO_PIN_5
