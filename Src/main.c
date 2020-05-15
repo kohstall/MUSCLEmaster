@@ -1,3 +1,5 @@
+// screen /dev/tty.usbmodem14203 115200
+
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -217,6 +219,22 @@ int main(void)
 //  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x01, 1, HAL_MAX_DELAY);
 //  HAL_Delay(2);
 
+  // --- ADC --------------------------------------
+  ADC_ChannelConfTypeDef adcChannel;
+  adcChannel.Channel = ADC_CHANNEL_14;
+	adcChannel.Rank = 1;
+	adcChannel.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+	adcChannel.Offset = 0;
+
+	HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+  HAL_ADC_Start(&hadc2);
+
+  uint32_t g_ADCValue;
+  int g_MeasurementNumber;
+
+
+
+
 
   while (1)
   {
@@ -229,13 +247,24 @@ int main(void)
   	//
   	//  	}
 
+  	// --- ADC ----------------------------------------------------
+  	//see https://visualgdb.com/tutorials/arm/stm32/adc/
+  	//uint32_t a_val;
+  	//a_val = HAL_ADC_GetValue(&hadc2)
+  	HAL_ADC_Start(&hadc2);
+  	if (HAL_ADC_PollForConversion(&hadc2, 2000) == HAL_OK)
+		{
+				g_ADCValue = HAL_ADC_GetValue(&hadc2);
+				g_MeasurementNumber++;
+		}
+
   	// ---I2C2 IMU ------------------------------------------------
   	//see: https://www.youtube.com/watch?v=isOekyygpR8
   	//b1101000
   	char accel_char[20];
 
-  	buf[0] = 0x6B;
-  	buf[1] = 0x00;
+  	buf[0] = 0x6B; //power register
+  	buf[1] = 0x00; //switch on
 		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 2, HAL_MAX_DELAY);
 		if (ret != HAL_OK){
 			strcpy((char*)buf, "Error IMU T\r\n");
@@ -243,7 +272,7 @@ int main(void)
 			buf[0] = 0x00;
 		}
 
-  	buf[0] = 0x41;
+  	buf[0] = 0x3B;
   	ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
   	if (ret != HAL_OK){
   		strcpy((char*)buf, "Error IMU T\r\n");
@@ -253,45 +282,45 @@ int main(void)
 				strcpy((char*)buf, "Error IMU R\r\n");
 			} else {
 				accel8l = (int8_t)buf[0];
-				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+				sprintf((char*)accel_char, "%u m\r\n", (int)accel8l);
 				//itoa(buf[0], accel_char, 10);
 			}
 
   	}
 
-  	buf[0] = 0x42;
-		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-		if (ret != HAL_OK){
-			strcpy((char*)buf, "Error IMU T\r\n");
-		} else {
-			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-			if (ret != HAL_OK){
-				strcpy((char*)buf, "Error IMU R\r\n");
-			} else {
-				accel8l = (int8_t)buf[0];
-				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
-				//itoa(buf[0], accel_char, 10);
-			}
-
-		}
-
-		//who am i WORKS
-
-		buf[0] = 0x75;
-				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-				if (ret != HAL_OK){
-					strcpy((char*)buf, "Error IMU T\r\n");
-				} else {
-					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-					if (ret != HAL_OK){
-						strcpy((char*)buf, "Error IMU R\r\n");
-					} else {
-						accel8l = (int8_t)buf[0];
-						//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
-						//itoa(buf[0], accel_char, 10);
-					}
-
-				}
+//  	buf[0] = 0x42;
+//		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//		if (ret != HAL_OK){
+//			strcpy((char*)buf, "Error IMU T\r\n");
+//		} else {
+//			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//			if (ret != HAL_OK){
+//				strcpy((char*)buf, "Error IMU R\r\n");
+//			} else {
+//				accel8l = (int8_t)buf[0];
+//				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+//				//itoa(buf[0], accel_char, 10);
+//			}
+//
+//		}
+//
+//		//who am i WORKS
+//
+//		buf[0] = 0x75;
+//				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//				if (ret != HAL_OK){
+//					strcpy((char*)buf, "Error IMU T\r\n");
+//				} else {
+//					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+//					if (ret != HAL_OK){
+//						strcpy((char*)buf, "Error IMU R\r\n");
+//					} else {
+//						accel8l = (int8_t)buf[0];
+//						//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+//						//itoa(buf[0], accel_char, 10);
+//					}
+//
+//				}
 
 
 
@@ -385,14 +414,16 @@ int main(void)
 	  // --- UART ----------------------------------------------------
 	  char buffer[20];
 	  char buffer0[20];
+	  char buffer1[20];
 	  //sprintf(buffer, "%f", Tval);
 	  angle &= AS_DATA_MASK;
 	  itoa(EncVal, buffer0, 10);
 	  itoa(angle, buffer, 10);
+	  itoa(g_ADCValue, buffer1, 10);
 
 	  HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
 
-	  sprintf((char*)buf, strcat(strcat(strcat(strcat(buffer0, "_"), strncat(buffer, &ch, 1)),"#"), strcat(accel_char, "_\r\n")  ) );
+	  sprintf((char*)buf, strcat(strcat(strcat(strcat(strcat(buffer0, "_"), strncat(buffer, &ch, 1)),"#"),strcat(buffer1, "*")), strcat(accel_char, "_\r\n")  ) );
 	  HAL_UART_Transmit(&huart3, buf, strlen((char*)buf), 1000);
 
 	  //HAL_UART_Receive(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
@@ -545,7 +576,7 @@ static void MX_ADC2_Init(void)
   hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
   hadc2.Init.Resolution = ADC_RESOLUTION_12B;
   hadc2.Init.ScanConvMode = DISABLE;
-  hadc2.Init.ContinuousConvMode = DISABLE;
+  hadc2.Init.ContinuousConvMode = ENABLE;
   hadc2.Init.DiscontinuousConvMode = DISABLE;
   hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -559,7 +590,7 @@ static void MX_ADC2_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
   */
-  sConfig.Channel = ADC_CHANNEL_14;
+  sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
