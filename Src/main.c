@@ -1,5 +1,3 @@
-// screen /dev/tty.usbmodem14203 115200
-
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -152,6 +150,8 @@ int main(void)
   HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1);
   HAL_TIM_OC_Start(&htim9, TIM_CHANNEL_2);
 
+
+
   HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, 1);
 
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, 0);
@@ -219,6 +219,17 @@ int main(void)
 //  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x01, 1, HAL_MAX_DELAY);
 //  HAL_Delay(2);
 
+  // --- MOTOR DRIVER ----------------------------------------------------
+  //EN_GATE
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+  HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+  HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_3);
+
+  HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, GPIO_PIN_SET);
+
   // --- ADC --------------------------------------
   ADC_ChannelConfTypeDef adcChannel;
   adcChannel.Channel = ADC_CHANNEL_14;
@@ -246,6 +257,13 @@ int main(void)
   	//  	else if (ii==1){
   	//
   	//  	}
+
+  	// --- MOTOR DRIVER ----------------------------------------------------
+  	// --- PWM pulses
+  	TIM1->CCR1 = 20;
+  	//TIM1->CCR2 = 50;
+  	//TIM1->CCR3 = 100;
+
 
   	// --- ADC ----------------------------------------------------
   	//see https://visualgdb.com/tutorials/arm/stm32/adc/
