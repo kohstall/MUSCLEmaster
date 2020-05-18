@@ -90,6 +90,12 @@ void Error_Handler(void);
 #define EN_GATE_GPIO_Port GPIOE
 #define M0_DC_CAL_Pin GPIO_PIN_15
 #define M0_DC_CAL_GPIO_Port GPIOE
+#define debug1_out_Pin GPIO_PIN_12
+#define debug1_out_GPIO_Port GPIOD
+#define debug2_out_Pin GPIO_PIN_13
+#define debug2_out_GPIO_Port GPIOD
+#define debug1_in_Pin GPIO_PIN_14
+#define debug1_in_GPIO_Port GPIOD
 #define ROT0_nCS_Pin GPIO_PIN_15
 #define ROT0_nCS_GPIO_Port GPIOD
 #define ROT0_I_W_Pin GPIO_PIN_8
@@ -115,6 +121,14 @@ void Error_Handler(void);
 #define AS_ADDR_SETTINGS1 0x0018
 #define AS_ADDR_SETTINGS2 0x8019
 
+#define PI 3.141592
+
+#define min(a,b) \
+   ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+     _a < _b ? _a : _b; })
+
+#define MOTOR_POLES 6
 
 
 /* USER CODE END Private defines */
