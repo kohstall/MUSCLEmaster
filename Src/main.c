@@ -23,11 +23,13 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#define __FPU_PRESENT             1U
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include "arm_math.h"
+//#include "arm_math.h"
 
 /* USER CODE END Includes */
 
@@ -156,6 +158,8 @@ int main(void)
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_10, 0);
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, 1);
 
+  SCB->CPACR |= 0xf00000;
+
 //  void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) // https://controllerstech.blogspot.com/2018/07/how-to-receive-uart-data-in-stm32.html
 //  {
 //    HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
@@ -182,7 +186,7 @@ int main(void)
   int i=0;
   uint32_t i_fast = 0;
   uint32_t i_slow = 0;
-  uint32_t fast2slow = 2000;
+  uint32_t fast2slow = 10000;
 
   //strcpy((char*)buf, "YUUP");
   sprintf((char*)buf, "START");
@@ -362,65 +366,39 @@ int main(void)
   	// -------------------------------------------------------------
 		// --- FAST PROCESS ----------------------------------------------------
 		// -------------------------------------------------------------
-  	HAL_Delay(1);
+  	//HAL_Delay(1);
   	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
   	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-  	HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//takes 550ns
-  	HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);
-  	HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);
-  	HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
 
   	//HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
 
   	// --- get angle
   	EncVal = TIM8->CNT;//takes 200ns
 
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
   	// --- MOTOR DRIVER ----------------------------------------------------
   	// --- PWM pulses
 
-  	float phase = (float) EncVal * 0.0031415 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
+  	float phase = (float) EncVal * 0.0219905 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
   	//float phase = 0.0;
 
     //float phase = ((float)i_fast)/20.0 * 2.0 * PI;
 
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
 
     float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
 
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-      	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
     u0 *= amp;  //takes<200ns
-
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-      	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
     phase += phase_shift;  //takes<200ns
 
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-      	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-    float test = amp/6.1234;  //takes<8000ns !!!!!!!!!!!!!!
-
-		debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
     //HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//11mus since last --> reduced it to 2 mus=200 clock cycles, by taking out divisions
 
-    float uA = u0 * cos(-phase); //takes<32000ns !!!!!!!!!!!!!!
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-    				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-    float uB = u0 * cos(-phase + 2.0 / 3.0 * PI);
-    float uC = u0 * cos(-phase + 2.0 * 2.0 / 3.0 * PI);
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-    				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+    float uA = u0 * arm_cos_f32(-phase); //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+    float uB = u0 * arm_cos_f32(-phase + 2.0943 ); // takes 3mus
+    float uC = u0 * arm_cos_f32(-phase + 4.1886);
 
     //HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//100mus since last == 10000 clock cycles
 
@@ -430,25 +408,15 @@ int main(void)
     uB -= uMin;
     uC -= uMin;
 
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-        				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
     int pwmA = (uint16_t) (pwm * uA); //takes<200ns
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-        				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
     int pwmB = (uint16_t) (pwm * uB); //takes<200ns
     int pwmC = (uint16_t) (pwm * uC); //takes<200ns
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-        				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
 
   	TIM1->CCR1 = pwmA; //takes<150ns
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-  	    				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
   	TIM1->CCR2 = pwmB; //takes<150ns
   	TIM1->CCR3 = pwmC; //takes<150ns
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-  	    				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 //
 //  	TIM1->CCR1 = 0;
 //  	TIM1->CCR2 = 0;
@@ -512,8 +480,6 @@ int main(void)
 
 	  i_fast++;
 	  // if and increment takes < 300ns
-	  debug1_out_GPIO_Port->BSRR = debug1_out_Pin;
-	    	    				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 	  //HAL_Delay(5);
 
     /* USER CODE END WHILE */
