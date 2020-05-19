@@ -1,0 +1,17 @@
+ //HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//11mus since last --> reduced it to 2 mus=200 clock cycles, by taking out division
+//    float uA = u0 * arm_cos_f32(-phase); //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+//    float uB = u0 * arm_cos_f32(-phase + 2.0943 ); // takes 3mus
+//    float uC = u0 * arm_cos_f32(-phase + 4.1886);
+//
+//    //HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//100mus since last == 10000 clock cycles
+//
+//    float uMin = min(min(uA, uB), uC); //this and all below is 700ns
+//
+//    uA -= uMin;
+//    uB -= uMin;
+//    uC -= uMin;
+//
+//
+//    int pwmA = (uint16_t) (pwm * uA); //takes<200ns
+//    int pwmB = (uint16_t) (pwm * uB); //takes<200ns
+//    int pwmC = (uint16_t) (pwm * uC); //takes<200ns

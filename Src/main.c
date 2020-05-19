@@ -361,6 +361,12 @@ int main(void)
 	float phase_shift = PI/2;
 	int pwm = 2048;
 
+  float lookup[210];
+
+  for (int i=0; i<210; i++){
+      lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
+  }
+
   while (1)
   {
   	// -------------------------------------------------------------
@@ -369,22 +375,19 @@ int main(void)
   	//HAL_Delay(1);
   	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
   	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+  	  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+  	  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+  	  	  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+  	  	  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
 
-  	//HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-
-  	// --- get angle
+  	// --- get angle from encoder 0...2000
   	EncVal = TIM8->CNT;//takes 200ns
+  	float phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
 
-
-  	// --- MOTOR DRIVER ----------------------------------------------------
-  	// --- PWM pulses
-
-  	float phase = (float) EncVal * 0.0219905 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
-  	//float phase = 0.0;
-
-    //float phase = ((float)i_fast)/20.0 * 2.0 * PI;
-
+  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 
 
     float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
@@ -393,27 +396,57 @@ int main(void)
 
     phase += phase_shift;  //takes<200ns
 
+    debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+    debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 
-    //HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//11mus since last --> reduced it to 2 mus=200 clock cycles, by taking out divisions
+    phase *= 100;
+    int int_phase = (int) phase;
+    int_phase = int_phase % 628;
+    if (int_phase < 0) {
+    	int_phase += 628;
+    }
 
-    float uA = u0 * arm_cos_f32(-phase); //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-    float uB = u0 * arm_cos_f32(-phase + 2.0943 ); // takes 3mus
-    float uC = u0 * arm_cos_f32(-phase + 4.1886);
+    float uA = 0;
+    float uB = 0;
+    float uC = 0;
 
-    //HAL_GPIO_TogglePin(debug1_out_GPIO_Port, debug1_out_Pin);//100mus since last == 10000 clock cycles
+    debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
-    float uMin = min(min(uA, uB), uC); //this and all below is 700ns
+//
+//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+//    			uB = lookup[2]; // takes 3mus
+//    			uC = 0;
 
-    uA -= uMin;
-    uB -= uMin;
-    uC -= uMin;
+    // ---- lookup  this optimized routine brings roundtrip down to 5mus
 
+    if  (int_phase < 210)	{ //0...209
+			uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+			uB = lookup[210 - 1 - int_phase]; // takes 3mus
+			uC = 0;
+    }
+	 else if  (int_phase < 420){	 //210...419
+			uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+			uB = lookup[int_phase - 210]; // takes 3mus
+			uC = lookup[420 - 1 - int_phase];
+	 }
+	 else	{  //420...629
+			uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+			uB = 0; // takes 3mus
+			uC = lookup[int_phase - 420];
+		}
 
-    int pwmA = (uint16_t) (pwm * uA); //takes<200ns
-    int pwmB = (uint16_t) (pwm * uB); //takes<200ns
-    int pwmC = (uint16_t) (pwm * uC); //takes<200ns
+    debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 
+    int pwmA = (uint16_t) (pwm * u0 * uA); //takes<200ns
+    int pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
+    int pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
 
+    // ---- end lookup
+
+    debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
+  	// --- MOTOR DRIVER ----------------------------------------------------
+  	// --- PWM pulses 0...2048
   	TIM1->CCR1 = pwmA; //takes<150ns
   	TIM1->CCR2 = pwmB; //takes<150ns
   	TIM1->CCR3 = pwmC; //takes<150ns
@@ -439,6 +472,7 @@ int main(void)
 			char buffer1[20];
 			char buffer2[20];
 			char buffer3[20];
+			char buffer4[20];
 
 
 
@@ -447,11 +481,19 @@ int main(void)
 			itoa(amp*1000, buffer1, 10);
 			itoa(phase_shift*1000, buffer2, 10);
 			itoa(pwmA, buffer3, 10);
+			itoa(int_phase, buffer4, 10);
+
+			itoa(uA*100, buffer0, 10);
+			itoa(uB*100, buffer1, 10);
+			itoa(uC*100, buffer2, 10);
+			itoa(lookup[209]*100, buffer3, 10);
+			itoa(int_phase, buffer4, 10);
+
 
 
 			HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
 
-			sprintf((char*)buf, strcat(strcat(buffer0, "_"),strcat(strcat(buffer1, "_"), strcat(strcat(buffer2, "#"), strcat(buffer3, "_\r\n")))));
+			sprintf((char*)buf, strcat(strcat(buffer0, "_"),strcat(strcat(buffer1, "_"), strcat(strcat(buffer2, "#"), strcat(strcat(buffer3, "_"), strcat(buffer4, "_\r\n"))))));
 			HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf));
 
 			switch(ch){
@@ -1064,7 +1106,8 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOE, LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin|nSCS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin 
+                          |nSCS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : LD_1_Pin LD_2_Pin EN_GATE_Pin M0_DC_CAL_Pin */
   GPIO_InitStruct.Pin = LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin;
@@ -1073,8 +1116,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : debug1_out_Pin debug2_out_Pin ROT0_nCS_Pin nSCS_Pin */
-  GPIO_InitStruct.Pin = debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin|nSCS_Pin;
+  /*Configure GPIO pins : PD11 debug1_out_Pin debug2_out_Pin ROT0_nCS_Pin 
+                           nSCS_Pin */
+  GPIO_InitStruct.Pin = GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin 
+                          |nSCS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
