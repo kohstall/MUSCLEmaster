@@ -15,3 +15,67 @@
 //    int pwmA = (uint16_t) (pwm * uA); //takes<200ns
 //    int pwmB = (uint16_t) (pwm * uB); //takes<200ns
 //    int pwmC = (uint16_t) (pwm * uC); //takes<200ns
+
+
+
+
+
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+// NEVER WORKED
+
+
+
+
+//was always off
+//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim){
+//	debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
+//	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+//	if(htim->Instance == TIM8){
+//
+//				debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
+//				debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+//			}
+//
+//}
+
+// works without this
+//void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim){
+//	HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
+//	if(htim->Instance == TIM8){
+//
+//		HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
+//			}
+//
+//}
+
+
+
+// works without
+//void TIM8_IRQHandler(void)
+//  {
+//
+//
+//		/* USER CODE BEGIN TIM2_IRQn 0 */
+//  	// this doesn't produce any result
+//  	// see https://community.st.com/s/question/0D50X00009XkWCY/using-timer-in-encoder-mode-with-interrupts-on-value-change?
+//
+//
+//  	HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
+//
+//		/* USER CODE END TIM2_IRQn 0 */
+//
+//
+//		HAL_TIM_IRQHandler(&htim8);
+//		HAL_TIM_IC_CaptureCallback(&htim8);
+//		HAL_TIM_TriggerCallback(&htim8);
+//
+//
+//		/* USER CODE BEGIN TIM2_IRQn 1 */
+//		/* USER CODE END TIM2_IRQn 1 */
+//
+//  }

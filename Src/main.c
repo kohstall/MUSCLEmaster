@@ -90,11 +90,36 @@ static void MX_TIM8_Init(void);
 static void MX_TIM13_Init(void);
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
+void TIM8_IRQHandler(void);
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
+void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
+void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
+void calc_lookup(float *lookup);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+float amp = 0.05;  // amp
+float phase_shift = PI/2;
+int pwm = 2048;
+float phase = 0;
+int int_phase = 0;
+int pwmA;
+int pwmB;
+int pwmC;
+
+float lookup[210];
+
+int skip_update = 0;
+
+
+
+
+
+
 
 
 /* USER CODE END 0 */
@@ -106,6 +131,7 @@ void delayMs( int delay);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+	calc_lookup(lookup);
 	uint8_t buf[40]; // see tutorial https://www.youtube.com/watch?v=isOekyygpR8
 
 	char ch;
@@ -234,7 +260,7 @@ int main(void)
 	{
 			g_ADCValue = HAL_ADC_GetValue(&hadc2);
 			g_MeasurementNumber++;
-	}
+	}//takes several microseconds
 
 	// ---I2C2 IMU ------------------------------------------------
 	//see: https://www.youtube.com/watch?v=isOekyygpR8
@@ -357,15 +383,7 @@ int main(void)
 
 
 
-	float amp = 0.05;  // amp
-	float phase_shift = PI/2;
-	int pwm = 2048;
 
-  float lookup[210];
-
-  for (int i=0; i<210; i++){
-      lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
-  }
 
   while (1)
   {
@@ -373,83 +391,20 @@ int main(void)
 		// --- FAST PROCESS ----------------------------------------------------
 		// -------------------------------------------------------------
   	//HAL_Delay(1);
+  	//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
+  	//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+
   	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
   	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
   	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-  	  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-  	  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-  	  	  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-  	  	  	  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+		debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+		debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+	  debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
 
-  	// --- get angle from encoder 0...2000
-  	EncVal = TIM8->CNT;//takes 200ns
-  	float phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
 
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-
-    float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
-
-    u0 *= amp;  //takes<200ns
-
-    phase += phase_shift;  //takes<200ns
-
-    debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-    phase *= 100;
-    int int_phase = (int) phase;
-    int_phase = int_phase % 628;
-    if (int_phase < 0) {
-    	int_phase += 628;
-    }
-
-    float uA = 0;
-    float uB = 0;
-    float uC = 0;
-
-    debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-//
-//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-//    			uB = lookup[2]; // takes 3mus
-//    			uC = 0;
-
-    // ---- lookup  this optimized routine brings roundtrip down to 5mus
-
-    if  (int_phase < 210)	{ //0...209
-			uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-			uB = lookup[210 - 1 - int_phase]; // takes 3mus
-			uC = 0;
-    }
-	 else if  (int_phase < 420){	 //210...419
-			uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-			uB = lookup[int_phase - 210]; // takes 3mus
-			uC = lookup[420 - 1 - int_phase];
-	 }
-	 else	{  //420...629
-			uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-			uB = 0; // takes 3mus
-			uC = lookup[int_phase - 420];
-		}
-
-    debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-    int pwmA = (uint16_t) (pwm * u0 * uA); //takes<200ns
-    int pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
-    int pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
-
-    // ---- end lookup
-
-    debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-  	// --- MOTOR DRIVER ----------------------------------------------------
-  	// --- PWM pulses 0...2048
-  	TIM1->CCR1 = pwmA; //takes<150ns
-  	TIM1->CCR2 = pwmB; //takes<150ns
-  	TIM1->CCR3 = pwmC; //takes<150ns
 //
 //  	TIM1->CCR1 = 0;
 //  	TIM1->CCR2 = 0;
@@ -483,9 +438,9 @@ int main(void)
 			itoa(pwmA, buffer3, 10);
 			itoa(int_phase, buffer4, 10);
 
-			itoa(uA*100, buffer0, 10);
-			itoa(uB*100, buffer1, 10);
-			itoa(uC*100, buffer2, 10);
+			//itoa(uA*100, buffer0, 10);
+			//itoa(uB*100, buffer1, 10);
+			//itoa(uC*100, buffer2, 10);
 			itoa(lookup[209]*100, buffer3, 10);
 			itoa(int_phase, buffer4, 10);
 
@@ -938,13 +893,16 @@ static void MX_TIM8_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM8_Init 2 */
+
+  HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
+
 
   /* USER CODE END TIM8_Init 2 */
 
@@ -1168,6 +1126,7 @@ void delayMs(int delay){
 //	}
 //}
 
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	if (GPIO_Pin == ROT0_I_W_Pin){
 		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
@@ -1177,6 +1136,108 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 		__NOP();
 	}
 }
+
+
+
+//this is it
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
+	// see https://community.st.com/s/question/0D50X00009XkWUpSAN/encoder-mode-and-rotary-encoder
+
+	//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
+	//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+	//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
+	if(htim->Instance == TIM8){
+		if (skip_update){
+			skip_update = 0;
+		}
+		else{
+			skip_update = 1;
+
+			//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
+			//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
+			//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+			// --- get angle from encoder 0...2000
+			EncVal = TIM8->CNT;//takes 200ns
+			phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
+
+			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+
+
+			float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
+
+			u0 *= amp;  //takes<200ns
+
+			phase += phase_shift;  //takes<200ns
+
+			debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+
+			phase *= 100;
+			int_phase = (int) phase;
+			int_phase = int_phase % 628;
+			if (int_phase < 0) {
+				int_phase += 628;
+			}
+
+			float uA = 0;
+			float uB = 0;
+			float uC = 0;
+
+			debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
+	//
+	//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+	//    			uB = lookup[2]; // takes 3mus
+	//    			uC = 0;
+
+			// ---- lookup  this optimized routine brings roundtrip down to 5mus
+
+			if  (int_phase < 210)	{ //0...209
+				uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+				uB = lookup[210 - 1 - int_phase]; // takes 3mus
+				uC = 0;
+			}
+		 else if  (int_phase < 420){	 //210...419
+				uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+				uB = lookup[int_phase - 210]; // takes 3mus
+				uC = lookup[420 - 1 - int_phase];
+		 }
+		 else	{  //420...629
+				uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+				uB = 0; // takes 3mus
+				uC = lookup[int_phase - 420];
+			}
+
+			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+
+			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
+			pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
+
+			// ---- end lookup
+
+			debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
+			// --- MOTOR DRIVER ----------------------------------------------------
+			// --- PWM pulses 0...2048
+			TIM1->CCR1 = pwmA; //takes<150ns
+			TIM1->CCR2 = pwmB; //takes<150ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+		}
+	}
+
+
+	//counterISR++;
+
+}
+
+void calc_lookup(float *lookup){
+	for (int i=0; i<210; i++){
+	    lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
+	}
+}
+
+
 /* USER CODE END 4 */
 
 /**
