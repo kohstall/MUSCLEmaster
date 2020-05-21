@@ -28,7 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include "arm_math.h"
+//#include "arm_math.h"
 //#include "arm_math.h"
 
 /* USER CODE END Includes */
@@ -67,6 +67,7 @@ TIM_HandleTypeDef htim12;
 TIM_HandleTypeDef htim13;
 
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart3_tx;
 
 /* USER CODE BEGIN PV */
 
@@ -79,6 +80,7 @@ static const uint8_t REG_POWER = 0x6B;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_TIM9_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_ADC1_Init(void);
@@ -102,6 +104,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
 //void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
 void calc_lookup(float *lookup);
 void myDelay(void);
+void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma);
 
 /* USER CODE END PFP */
 
@@ -161,6 +164,9 @@ int main(void)
 	//ls /dev/tty*
 	//screen /dev/tty.usbmodem14203 115200          --- stop: control a \
 
+	//Drivers/CMSIS/DSP/Include
+	//ARM_MATH_CM4
+
 
 
   /* USER CODE END 1 */
@@ -184,6 +190,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM9_Init();
   MX_SPI2_Init();
   MX_ADC1_Init();
@@ -201,7 +208,9 @@ int main(void)
 
   calc_lookup(lookup);
 
-	uint8_t buf[40];
+	uint8_t buf[300];
+	uint8_t plot[300];
+
 	char ch='q';
 	HAL_StatusTypeDef ret;
 
@@ -413,6 +422,8 @@ int main(void)
 //	TIM1->CCR1 = 0;
 //	phase = (float) EncVal * 0.02199 ;
 
+	HAL_DMA_RegisterCallback(&hdma_usart3_tx, HAL_DMA_XFER_CPLT_CB_ID, &DMAUSARTTransferComplete);
+
 
 
   /* USER CODE END 2 */
@@ -573,13 +584,20 @@ int main(void)
 					ch='q';
 			}
 
-
-			sprintf((char*)buf, "%c#%d %d A %d %d T %d %d \r\n",
+			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
+			sprintf((char*)buf, "%c#%d %d A %d %d T %d %d                                                                                                                               \r\n",
 					ch, (int)(amp*100), (int)(phase_shift*100),
 					g_ADCValue1_4, g_ADCValue1_5,
 					(int)(stiffness*1000), (int)(1000*av_velocity));
 
-			HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf));
+			buf[150] = '|';
+			buf[100] = '.';
+			buf[50] = '|';
+			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
+
+			//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
+			huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+			HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 
 			ch='q';
 
@@ -1262,6 +1280,22 @@ static void MX_USART3_UART_Init(void)
 
 }
 
+/** 
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void) 
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+
+}
+
 /**
   * @brief GPIO Initialization Function
   * @param None
@@ -1522,6 +1556,10 @@ void calc_lookup(float *lookup){
 	for (int i=0; i<210; i++){
 	    lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
 	}
+}
+
+void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma){
+	huart3.Instance->CR3 &= ~USART_CR3_DMAT;
 }
 
 
