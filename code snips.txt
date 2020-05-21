@@ -20,6 +20,19 @@
 
 
 
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, 0);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_10, 0);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, 1);
+
+
+
+//  HAL_StatusTypeDef HAL_TIM_OC_ConfigChannel(TIM_HandleTypeDef *htim,
+//                                             TIM_OC_InitTypeDef *sConfig,
+//                                             uint32_t Channel)
+
+
+//sprintf((char*)buf, strcat(strcat(buffer0, "_"),strcat(strcat(buffer1, "_"), strcat(strcat(buffer2, "#"), strcat(strcat(buffer3, "_"), strcat(buffer4, "_\r\n"))))));
+			
 
 ----------------------------------------------------------------
 ----------------------------------------------------------------
@@ -27,6 +40,14 @@
 ----------------------------------------------------------------
 ----------------------------------------------------------------
 // NEVER WORKED
+
+
+//  void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) // https://controllerstech.blogspot.com/2018/07/how-to-receive-uart-data-in-stm32.html
+//  {
+//    HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
+//  }
+//
+//  HAL_UART_Receive_IT (&huart3, (uint8_t *)&ch, 1);
 
 
 

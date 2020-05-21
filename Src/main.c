@@ -60,14 +60,16 @@ I2C_HandleTypeDef hi2c2;
 SPI_HandleTypeDef hspi2;
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim8;
 TIM_HandleTypeDef htim9;
+TIM_HandleTypeDef htim12;
 TIM_HandleTypeDef htim13;
 
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
-int16_t EncVal;
+
 static const uint8_t IMU_ADDR = 0x68 << 1;
 static const uint8_t REG_ACCEL_H = 0x3B;
 static const uint8_t REG_ACCEL_L = 0x3C;
@@ -88,36 +90,61 @@ static void MX_TIM1_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM8_Init(void);
 static void MX_TIM13_Init(void);
+static void MX_TIM12_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
-void TIM8_IRQHandler(void);
+void playSound(uint16_t periode, uint16_t volume, uint16_t cycles);
+//void TIM8_IRQHandler(void);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
-void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
-void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
+//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
+//void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
 void calc_lookup(float *lookup);
+void myDelay(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-float amp = 0.05;  // amp
-float phase_shift = PI/2;
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+// --- MOTOR SPECIFIC PARAMETERS
+float phase0 = 0.6; // angle motor winding A to encoder 0 [radians of electrical phase]
+
+// --- SYSTEM SPECIFIC PARAMETERS
+
 int pwm = 2048;
+
+// --- CONTROL PARAMETERS
+
+float amp = 0.05;  // amp
+int run_motor = 1;
+int direction = 1;
+float phase_shift = PI/2;
+
+float stiffness = 0;
+
+// --- INITIALIZE OTHER GLOBALS
+int16_t EncVal;
+int16_t last_EncVal;
 float phase = 0;
 int int_phase = 0;
-int pwmA;
-int pwmB;
-int pwmC;
-
-float lookup[210];
+float velocity = 0;
+float av_velocity = 0;
+int pwmA = 0;
+int pwmB = 0;
+int pwmC = 0;
 
 int skip_update = 0;
+int skip_update_high_v = 0;
 
+//uint16_t tim12_counter = 5;
+uint32_t tim12_counter = 4000000000;
 
+// --- LOOKUPS
 
-
+float lookup[210];
 
 
 
@@ -131,14 +158,10 @@ int skip_update = 0;
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	calc_lookup(lookup);
-	uint8_t buf[40]; // see tutorial https://www.youtube.com/watch?v=isOekyygpR8
+	//ls /dev/tty*
+	//screen /dev/tty.usbmodem14203 115200          --- stop: control a \
 
-	char ch;
-	HAL_StatusTypeDef ret;
-	int16_t accel16;
-	uint8_t accel8l;
-	uint8_t accel8h;
+
 
   /* USER CODE END 1 */
   
@@ -172,97 +195,84 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM8_Init();
   MX_TIM13_Init();
+  MX_TIM12_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  calc_lookup(lookup);
+
+	uint8_t buf[40];
+	char ch='q';
+	HAL_StatusTypeDef ret;
+
+	int16_t accel16;
+	uint8_t accel8l;
+	uint8_t accel8h;
+
+  // --- SET STATUS LEDS
   HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1);
   HAL_TIM_OC_Start(&htim9, TIM_CHANNEL_2);
 
+  HAL_TIM_OC_Start(&htim12, TIM_CHANNEL_1);
+  HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1);
 
-
+  // --- ENABLE DRV
   HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, 1);
 
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, 0);
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_10, 0);
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, 1);
 
   SCB->CPACR |= 0xf00000;
 
-//  void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) // https://controllerstech.blogspot.com/2018/07/how-to-receive-uart-data-in-stm32.html
-//  {
-//    HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
-//  }
-//
-//  HAL_UART_Receive_IT (&huart3, (uint8_t *)&ch, 1);
-
-
-
-//  HAL_StatusTypeDef HAL_TIM_OC_ConfigChannel(TIM_HandleTypeDef *htim,
-//                                             TIM_OC_InitTypeDef *sConfig,
-//                                             uint32_t Channel)
-
-
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-//  for(;;)
-//   {
-//   HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-//   HAL_Delay(600);
-//   }
   int i=0;
-  uint32_t i_fast = 0;
-  uint32_t i_slow = 0;
-  uint32_t fast2slow = 10000;
+	uint32_t i_fast = 0;
+	uint32_t i_slow = 0;
+	uint32_t fast2slow = 2000;
 
-  //strcpy((char*)buf, "YUUP");
-  sprintf((char*)buf, "START");
-  ch='t';
-  int blink_duration = 100;
-
-  HAL_TIM_Encoder_Start_IT(&htim8, TIM_CHANNEL_ALL );
-
-//  buf[0] = 0x6B;
-//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x00, 1, HAL_MAX_DELAY);
-//  HAL_Delay(2);
+	int blink_duration = 100;
 
 
-  // --- MOTOR DRIVER ----------------------------------------------------
-  //EN_GATE
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-  HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_3);
 
-  HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, GPIO_PIN_SET);
+  //  buf[0] = 0x6B;
+  //  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+  //  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x00, 1, HAL_MAX_DELAY);
+  //  HAL_Delay(2);
 
-  // --- ADC --------------------------------------
-  ADC_ChannelConfTypeDef adcChannel;
-  adcChannel.Channel = ADC_CHANNEL_14;
+
+	// --- MOTOR DRIVER ----------------------------------------------------
+	//EN_GATE
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_3);
+
+	playSound( 3, 100, 20);
+
+	HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, GPIO_PIN_SET);
+
+	// --- ADC --------------------------------------
+	ADC_ChannelConfTypeDef adcChannel;
+
+	//adcChannel.Channel = ADC_CHANNEL_8;
 	adcChannel.Rank = 1;
-	adcChannel.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+	adcChannel.SamplingTime = ADC_SAMPLETIME_15CYCLES;//5mus //ADC_SAMPLETIME_480CYCLES;// 20mus
 	adcChannel.Offset = 0;
+	//HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
 
-	HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-  HAL_ADC_Start(&hadc2);
 
-  uint32_t g_ADCValue;
-  int g_MeasurementNumber;
 
-  // --- ADC ----------------------------------------------------
+	uint32_t g_ADCValue8;
+	uint32_t g_ADCValue14;
+	uint32_t g_ADCValue15;
+	int g_MeasurementNumber;
+
 	//see https://visualgdb.com/tutorials/arm/stm32/adc/
 	//uint32_t a_val;
 	//a_val = HAL_ADC_GetValue(&hadc2)
-	HAL_ADC_Start(&hadc2);
-	if (HAL_ADC_PollForConversion(&hadc2, 2000) == HAL_OK)
-	{
-			g_ADCValue = HAL_ADC_GetValue(&hadc2);
-			g_MeasurementNumber++;
-	}//takes several microseconds
+	//HAL_ADC_Start(&hadc2);
 
-	// ---I2C2 IMU ------------------------------------------------
+
+	// --- I2C2 IMU ------------------------------------------------
 	//see: https://www.youtube.com/watch?v=isOekyygpR8
 	//b1101000
 	char accel_char[20];
@@ -292,39 +302,39 @@ int main(void)
 
 	}
 
-//  	buf[0] = 0x42;
-//		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-//		if (ret != HAL_OK){
-//			strcpy((char*)buf, "Error IMU T\r\n");
-//		} else {
-//			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-//			if (ret != HAL_OK){
-//				strcpy((char*)buf, "Error IMU R\r\n");
-//			} else {
-//				accel8l = (int8_t)buf[0];
-//				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
-//				//itoa(buf[0], accel_char, 10);
-//			}
-//
-//		}
-//
-//		//who am i WORKS
-//
-//		buf[0] = 0x75;
-//				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-//				if (ret != HAL_OK){
-//					strcpy((char*)buf, "Error IMU T\r\n");
-//				} else {
-//					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
-//					if (ret != HAL_OK){
-//						strcpy((char*)buf, "Error IMU R\r\n");
-//					} else {
-//						accel8l = (int8_t)buf[0];
-//						//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
-//						//itoa(buf[0], accel_char, 10);
-//					}
-//
-//				}
+  //  	buf[0] = 0x42;
+  //		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+  //		if (ret != HAL_OK){
+  //			strcpy((char*)buf, "Error IMU T\r\n");
+  //		} else {
+  //			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+  //			if (ret != HAL_OK){
+  //				strcpy((char*)buf, "Error IMU R\r\n");
+  //			} else {
+  //				accel8l = (int8_t)buf[0];
+  //				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+  //				//itoa(buf[0], accel_char, 10);
+  //			}
+  //
+  //		}
+  //
+  //		//who am i WORKS
+  //
+  //		buf[0] = 0x75;
+  //				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+  //				if (ret != HAL_OK){
+  //					strcpy((char*)buf, "Error IMU T\r\n");
+  //				} else {
+  //					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+  //					if (ret != HAL_OK){
+  //						strcpy((char*)buf, "Error IMU R\r\n");
+  //					} else {
+  //						accel8l = (int8_t)buf[0];
+  //						//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
+  //						//itoa(buf[0], accel_char, 10);
+  //					}
+  //
+  //				}
 
 	// --- TIMERS ----------------------------------------------------
 	TIM9->CCR1 = blink_duration;
@@ -332,14 +342,25 @@ int main(void)
 
 	// --- GPIO ----------------------------------------------------
 
-  GPIOE->BSRR = GPIO_PIN_4; //switches LD2
+	GPIOE->BSRR = GPIO_PIN_4; //switches LD2
+
+
+
+
+	playSound( 2, 100, 40);
+	playSound( 1, 100, 80);
+	HAL_Delay(100); // So the system stops vibrating
 
 
 
 
 
 
-  // --- SPI ----------------------------------------------------
+	// --- ROTATION SENSOR INIT ----------------------------------------------------
+	HAL_TIM_Encoder_Start_IT(&htim8, TIM_CHANNEL_ALL );
+
+	// --- ROTATION SENSOR SETTINGS ----------------------------------------------------
+
 	//ROT0_nCS_GPIO_Port->BSRR = (uint32_t)ROT0_nCS_Pin << 16U;
 
 	uint16_t address = 0x0000;
@@ -377,10 +398,27 @@ int main(void)
 	HAL_SPI_Receive(&hspi2, (uint16_t *)&angle, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 
-	// --- Calibrate counter_angle -----------------------------------
-	angle &= AS_DATA_MASK;
-	TIM8->CNT = (uint16_t) ((float)angle /16384.0 * 2000.0);
 
+	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
+	angle &= AS_DATA_MASK;
+	EncVal = (uint16_t) ((float)angle /16384.0 * 2000.0);
+	last_EncVal = EncVal;
+	TIM8->CNT = EncVal;
+
+
+	// --- Calibrate phase0   ------ TODO also this requires that we are not yet sensitive to value change
+//	TIM1->CCR1 = 50;
+//	HAL_Delay(500);
+//	EncVal = TIM8->CNT;//takes 200ns
+//	TIM1->CCR1 = 0;
+//	phase = (float) EncVal * 0.02199 ;
+
+
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
 
 
 
@@ -398,12 +436,79 @@ int main(void)
   	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
   	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-		debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-		debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-	  debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
 
+		// 3measurements take 25mus --- one just 5mus --- 7 take 50mus
+
+		// --- ADC MEASUREMENTS
+		uint32_t g_ADCValue1_4=5;
+		uint32_t g_ADCValue1_5=5;
+
+		// --- VBUS
+		adcChannel.Channel = ADC_CHANNEL_8;
+		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+		HAL_ADC_Start(&hadc2);
+	  if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
+		{
+				g_ADCValue8 = HAL_ADC_GetValue(&hadc2);
+				g_MeasurementNumber++;
+		}//takes several microseconds
+
+	  // --- STRAIN
+	  adcChannel.Channel = ADC_CHANNEL_14;
+		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+		HAL_ADC_Start(&hadc2);
+		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
+		{
+				g_ADCValue14 = HAL_ADC_GetValue(&hadc2);
+				g_MeasurementNumber++;
+		}//takes several microseconds
+
+		// --- STRAIN
+		adcChannel.Channel = ADC_CHANNEL_15;
+		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+		HAL_ADC_Start(&hadc2);
+		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK){
+				g_ADCValue15 = HAL_ADC_GetValue(&hadc2);
+		}
+
+		uint32_t g_ADCValue1_1=5;
+		adcChannel.Channel = ADC_CHANNEL_1;
+		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+		HAL_ADC_Start(&hadc1);
+		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+				g_ADCValue1_1 = HAL_ADC_GetValue(&hadc1);
+		}
+
+		uint32_t g_ADCValue1_2=5;
+		adcChannel.Channel = ADC_CHANNEL_2;
+		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+		HAL_ADC_Start(&hadc1);
+		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+				g_ADCValue1_2 = HAL_ADC_GetValue(&hadc1);
+		}
+
+		// --- MOTOR TEMP 105 is room temp rising
+
+		adcChannel.Channel = ADC_CHANNEL_4;
+		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+		HAL_ADC_Start(&hadc1);
+		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+				g_ADCValue1_4 = HAL_ADC_GetValue(&hadc1);
+		}
+
+		// --- BOARD TEMP 1280 is room temp rising
+		adcChannel.Channel = ADC_CHANNEL_5;
+		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+		HAL_ADC_Start(&hadc1);
+		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+				g_ADCValue1_5 = HAL_ADC_GetValue(&hadc1);
+		}
+
+//
+//
+//
+//	  HAL_TIM_IC_CaptureCallback(&htim8);// TODO thisis ahack so it get's going eventually when at standstill
 
 //
 //  	TIM1->CCR1 = 0;
@@ -423,60 +528,65 @@ int main(void)
 
 			// --- UART ----------------------------------------------------
 
-			char buffer0[20];
-			char buffer1[20];
-			char buffer2[20];
-			char buffer3[20];
-			char buffer4[20];
-
-
-
-
-			itoa((int)phase, buffer0, 10);
-			itoa(amp*1000, buffer1, 10);
-			itoa(phase_shift*1000, buffer2, 10);
-			itoa(pwmA, buffer3, 10);
-			itoa(int_phase, buffer4, 10);
-
-			//itoa(uA*100, buffer0, 10);
-			//itoa(uB*100, buffer1, 10);
-			//itoa(uC*100, buffer2, 10);
-			itoa(lookup[209]*100, buffer3, 10);
-			itoa(int_phase, buffer4, 10);
-
-
 
 			HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
 
-			sprintf((char*)buf, strcat(strcat(buffer0, "_"),strcat(strcat(buffer1, "_"), strcat(strcat(buffer2, "#"), strcat(strcat(buffer3, "_"), strcat(buffer4, "_\r\n"))))));
-			HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf));
 
 			switch(ch){
 				case 'w':
-					ch='t';
 					amp *= 2;
 					break;
 				case 's':
-					ch='t';
 					amp /= 2;
 					break;
 				case 'a':
-					ch='t';
-					phase_shift += 0.1;
+					phase_shift += 0.05;
 					break;
 				case 'd':
-					ch='t';
-					phase_shift -= 0.1;
+					phase_shift -= 0.05;
+					break;
+				case 't':
+					run_motor = 1;
+					break;
+				case 'g':
+					run_motor = 0;
+					break;
+				case 'h':
+					direction = 1;
+					break;
+				case 'f':
+					direction = -1;
+					break;
+				case 'r':
+					direction *= -1;
+					break;
+				case 'p':
+					playSound( 1, 20, 100);
+					break;
+				case 'u':
+					stiffness += 0.001;
+					break;
+				case 'j':
+					stiffness -= 0.001;
 					break;
 				default:
-					ch='t';
-
+					ch='q';
 			}
+
+
+			sprintf((char*)buf, "%c#%d %d A %d %d T %d %d \r\n",
+					ch, (int)(amp*100), (int)(phase_shift*100),
+					g_ADCValue1_4, g_ADCValue1_5,
+					(int)(stiffness*1000), (int)(1000*av_velocity));
+
+			HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf));
+
+			ch='q';
+
 			i_slow++;
 	  }
 
 	  i_fast++;
-	  // if and increment takes < 300ns
 	  //HAL_Delay(5);
 
     /* USER CODE END WHILE */
@@ -552,7 +662,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -856,6 +966,64 @@ static void MX_TIM1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief TIM8 Initialization Function
   * @param None
   * @retval None
@@ -901,7 +1069,7 @@ static void MX_TIM8_Init(void)
   }
   /* USER CODE BEGIN TIM8_Init 2 */
 
-  HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
+  //HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn); // this didn't seem to be necessary
 
 
   /* USER CODE END TIM8_Init 2 */
@@ -962,6 +1130,57 @@ static void MX_TIM9_Init(void)
 
   /* USER CODE END TIM9_Init 2 */
   HAL_TIM_MspPostInit(&htim9);
+
+}
+
+/**
+  * @brief TIM12 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM12_Init(void)
+{
+
+  /* USER CODE BEGIN TIM12_Init 0 */
+
+  /* USER CODE END TIM12_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM12_Init 1 */
+
+  /* USER CODE END TIM12_Init 1 */
+  htim12.Instance = TIM12;
+  htim12.Init.Prescaler = 4;
+  htim12.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim12.Init.Period = 65535;
+  htim12.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim12.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim12) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim12, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim12) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim12, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM12_Init 2 */
+
+  /* USER CODE END TIM12_Init 2 */
 
 }
 
@@ -1126,6 +1345,28 @@ void delayMs(int delay){
 //	}
 //}
 
+void myDelay(void){
+	HAL_Delay(1);
+
+}
+
+void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
+	// TODO disable interrupt for the duration of sound
+	//HAL_NVIC_DisableIRQ(TIM8_UP_TIM13_IRQn);
+	//HAL_Delay(1000);
+
+	for (uint16_t i=0; i<cycles; i++){
+		TIM1->CCR1 = 0; //takes<150ns
+		TIM1->CCR2 = volume; //takes<150ns
+		HAL_Delay(periode);
+		TIM1->CCR1 = volume; //takes<150ns
+		TIM1->CCR2 = 0; //takes<150ns
+		HAL_Delay(periode);
+	}
+
+	//HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
+}
+
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	if (GPIO_Pin == ROT0_I_W_Pin){
@@ -1147,82 +1388,127 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 	//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
 	//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
 	if(htim->Instance == TIM8){
-		if (skip_update){
+
+		if (skip_update){ //TODO somehow the Callback is triggered at this strange 25% duty cycle so we just look at every second update to get a constant frequency
 			skip_update = 0;
 		}
 		else{
+
 			skip_update = 1;
 
-			//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
-			//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
-			//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
-			// --- get angle from encoder 0...2000
-			EncVal = TIM8->CNT;//takes 200ns
-			phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
-
-			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-
-			float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
-
-			u0 *= amp;  //takes<200ns
-
-			phase += phase_shift;  //takes<200ns
-
-			debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-			phase *= 100;
-			int_phase = (int) phase;
-			int_phase = int_phase % 628;
-			if (int_phase < 0) {
-				int_phase += 628;
+			if (abs(av_velocity) > 5 &&  skip_update_high_v == 1){
+				skip_update_high_v = 0;
 			}
+			else {
 
-			float uA = 0;
-			float uB = 0;
-			float uC = 0;
+				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 
-			debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+				skip_update_high_v = 1;
+
+
+
+				EncVal = TIM8->CNT;//takes 200ns
+
+				//tim12_counter = TIM12->CNT;
+				tim12_counter = TIM2->CNT;
+				if (tim12_counter > 10000){ // TODO fix the issue that this gets almost never called when velocity is super low.
+					//TIM12->CNT = 0;
+					TIM2->CNT = 0;
+					int EncDiff = EncVal-last_EncVal;
+					if (EncDiff > 1000){ // if jump is more than a half rotation it's most likely the 0 crossing
+						EncDiff -= 2000;
+					}
+					else if (EncDiff < -1000){
+						EncDiff += 2000;
+					}
+					velocity = (float)(EncDiff) / (float)tim12_counter;
+					velocity *= 10500; // /2000 steps/rotation / 21000000 counts/sec  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
+					av_velocity = 0.95 * av_velocity + 0.05 * velocity;
+					last_EncVal = EncVal;
+				}
+
+
+
+				//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
+				//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
+				//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+				// --- get angle from encoder 0...2000
+
+
+
+				phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
+				phase -= phase0;
+
+
+
+
+				float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
+				float modified_amp = amp + stiffness * av_velocity * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
+				//u0 *= amp;  //takes<200ns
+				u0 *= modified_amp;  //takes<200ns
+				u0 *= run_motor;  //takes<200ns
+
+				if (direction == 1){
+					phase -= phase_shift;  //takes<200ns
+				}
+				else {
+					phase += phase_shift;
+				}
 
 	//
-	//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-	//    			uB = lookup[2]; // takes 3mus
-	//    			uC = 0;
 
-			// ---- lookup  this optimized routine brings roundtrip down to 5mus
 
-			if  (int_phase < 210)	{ //0...209
-				uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-				uB = lookup[210 - 1 - int_phase]; // takes 3mus
-				uC = 0;
+
+				phase *= 100;
+				int_phase = (int) phase;
+				int_phase = int_phase % 628;
+				if (int_phase < 0) {
+					int_phase += 628;
+				}
+
+				float uA = 0;
+				float uB = 0;
+				float uC = 0;
+
+
+		//
+		//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+		//    			uB = lookup[2]; // takes 3mus
+		//    			uC = 0;
+
+				// ---- lookup  this optimized routine brings roundtrip down to 5mus
+
+				if  (int_phase < 210)	{ //0...209
+					uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+					uB = lookup[210 - 1 - int_phase]; // takes 3mus
+					uC = 0;
+				}
+			 else if  (int_phase < 420){	 //210...419
+					uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+					uB = lookup[int_phase - 210]; // takes 3mus
+					uC = lookup[420 - 1 - int_phase];
+			 }
+			 else	{  //420...629
+					uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+					uB = 0; // takes 3mus
+					uC = lookup[int_phase - 420];
+				}
+
+
+				pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+				pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
+				pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
+
+				// ---- end lookup
+
+				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
+				// --- MOTOR DRIVER ----------------------------------------------------
+				// --- PWM pulses 0...2048
+				TIM1->CCR1 = pwmA; //takes<150ns
+				TIM1->CCR2 = pwmB; //takes<150ns
+				TIM1->CCR3 = pwmC; //takes<150ns
 			}
-		 else if  (int_phase < 420){	 //210...419
-				uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-				uB = lookup[int_phase - 210]; // takes 3mus
-				uC = lookup[420 - 1 - int_phase];
-		 }
-		 else	{  //420...629
-				uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-				uB = 0; // takes 3mus
-				uC = lookup[int_phase - 420];
-			}
-
-			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
-			pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
-			pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
-
-			// ---- end lookup
-
-			debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-			// --- MOTOR DRIVER ----------------------------------------------------
-			// --- PWM pulses 0...2048
-			TIM1->CCR1 = pwmA; //takes<150ns
-			TIM1->CCR2 = pwmB; //takes<150ns
-			TIM1->CCR3 = pwmC; //takes<150ns
 		}
 	}
 
@@ -1232,6 +1518,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 }
 
 void calc_lookup(float *lookup){
+	// TODO plug in a higher order harmonic and see if system gets more energy efficient or more silent
 	for (int i=0; i<210; i++){
 	    lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
 	}
