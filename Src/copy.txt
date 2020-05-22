@@ -1,0 +1,188 @@
+void CIP_EC_Init(ECManagerDataTypeDef * ec){
+
+/** For this quick init code and using the scan mode, make sure
+
+
+
+* that both ADC channels are on the same ADC block
+
+
+*/
+
+
+Q_REQUIRE(ec->adc_handle_ec == ec->adc_handle_thermo);
+/** Initialize ADC component */
+
+
+
+ADC_ChannelConfTypeDef sConfig;
+/** Configure the global features of the ADC (Clock, Resolution,
+
+
+
+* Data Alignment and number of conversion)
+
+
+*/
+
+
+hadc2.Instance = ADC2;
+
+
+hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+
+
+hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+
+
+hadc2.Init.ScanConvMode = ENABLE;
+
+
+hadc2.Init.ContinuousConvMode = DISABLE;
+
+
+hadc2.Init.DiscontinuousConvMode = DISABLE;
+
+
+hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+
+
+hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+
+
+hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+
+
+hadc2.Init.NbrOfConversion = 2;
+
+
+hadc2.Init.DMAContinuousRequests = DISABLE;
+
+
+hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+if (HAL_ADC_Init((ADC_HandleTypeDef *)ec->adc_handle_ec) != HAL_OK)
+
+
+
+{
+
+
+Q_ERROR();
+
+
+}
+/** Configure for the EC ADC regular channel its corresponding rank
+
+
+
+* in the sequencer and its sample time.
+
+
+*/
+
+
+sConfig.Channel = ec->adc_channel_ec;
+
+
+sConfig.Rank = 1;
+/** Sampling takes T_conf = sampling_time + 12 cycles.
+
+
+
+* At 480 cycles sampling time we need a total of 492 cycles
+
+
+* At 186 MHz, this needs 2.93 micro seconds.
+
+
+*/
+
+
+sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+if (HAL_ADC_ConfigChannel((ADC_HandleTypeDef *)ec->adc_handle_ec, &sConfig) != HAL_OK)
+
+
+
+{
+
+
+Q_ERROR();
+
+
+}
+/** Configure for the temperature ADC regular channel its corresponding rank
+
+
+
+* in the sequencer and its sample time.
+
+
+*/
+
+
+sConfig.Channel = ec->adc_channel_thermo;
+
+
+sConfig.Rank = 2;
+
+
+if (HAL_ADC_ConfigChannel((ADC_HandleTypeDef *)ec->adc_handle_ec, &sConfig) != HAL_OK)
+
+
+{
+
+
+Q_ERROR();
+
+
+}
+static QEvt const setupDone = {EC_SETUP_DONE_SIG, 0, 0};
+
+
+
+QACTIVE_POST(AO_ECManager, &setupDone, (void *)0);
+
+
+}
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef * hadc){
+
+/** Check if the interrupt flag is a EOC flag */
+
+
+
+if (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_EOC))
+
+
+{
+if (channel_position < EC_PROBE_CHANNEL_COUNT){
+
+
+
+raw_results[channel_position] = HAL_ADC_GetValue(hadc);
+
+
+channel_position++;
+
+
+}
+
+
+else {
+
+
+/** Reset channel position to the first channel */
+
+
+channel_position = 0;
+
+
+//TODO: calculate the data
+
+
+}
+
+
+}
+
+
+}

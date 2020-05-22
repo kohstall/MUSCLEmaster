@@ -51,6 +51,7 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
+DMA_HandleTypeDef hdma_adc2;
 
 CAN_HandleTypeDef hcan1;
 
@@ -141,6 +142,8 @@ int pwmC = 0;
 
 int skip_update = 0;
 int skip_update_high_v = 0;
+
+uint16_t adc_buf[30];
 
 //uint16_t tim12_counter = 5;
 uint32_t tim12_counter = 4000000000;
@@ -422,7 +425,13 @@ int main(void)
 //	TIM1->CCR1 = 0;
 //	phase = (float) EncVal * 0.02199 ;
 
+	// --- UART DMA
 	HAL_DMA_RegisterCallback(&hdma_usart3_tx, HAL_DMA_XFER_CPLT_CB_ID, &DMAUSARTTransferComplete);
+
+	// --- ADC DMA
+	HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc_buf, 30); // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
+
+
 
 
 
@@ -455,66 +464,66 @@ int main(void)
 		uint32_t g_ADCValue1_4=5;
 		uint32_t g_ADCValue1_5=5;
 
-		// --- VBUS
-		adcChannel.Channel = ADC_CHANNEL_8;
-		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-		HAL_ADC_Start(&hadc2);
-	  if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
-		{
-				g_ADCValue8 = HAL_ADC_GetValue(&hadc2);
-				g_MeasurementNumber++;
-		}//takes several microseconds
-
-	  // --- STRAIN
-	  adcChannel.Channel = ADC_CHANNEL_14;
-		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-		HAL_ADC_Start(&hadc2);
-		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
-		{
-				g_ADCValue14 = HAL_ADC_GetValue(&hadc2);
-				g_MeasurementNumber++;
-		}//takes several microseconds
-
-		// --- STRAIN
-		adcChannel.Channel = ADC_CHANNEL_15;
-		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-		HAL_ADC_Start(&hadc2);
-		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK){
-				g_ADCValue15 = HAL_ADC_GetValue(&hadc2);
-		}
-
-		uint32_t g_ADCValue1_1=5;
-		adcChannel.Channel = ADC_CHANNEL_1;
-		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-		HAL_ADC_Start(&hadc1);
-		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-				g_ADCValue1_1 = HAL_ADC_GetValue(&hadc1);
-		}
-
-		uint32_t g_ADCValue1_2=5;
-		adcChannel.Channel = ADC_CHANNEL_2;
-		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-		HAL_ADC_Start(&hadc1);
-		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-				g_ADCValue1_2 = HAL_ADC_GetValue(&hadc1);
-		}
-
-		// --- MOTOR TEMP 105 is room temp rising
-
-		adcChannel.Channel = ADC_CHANNEL_4;
-		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-		HAL_ADC_Start(&hadc1);
-		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-				g_ADCValue1_4 = HAL_ADC_GetValue(&hadc1);
-		}
-
-		// --- BOARD TEMP 1280 is room temp rising
-		adcChannel.Channel = ADC_CHANNEL_5;
-		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-		HAL_ADC_Start(&hadc1);
-		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-				g_ADCValue1_5 = HAL_ADC_GetValue(&hadc1);
-		}
+//		// --- VBUS
+//		adcChannel.Channel = ADC_CHANNEL_8;
+//		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+//		HAL_ADC_Start(&hadc2);
+//	  if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
+//		{
+//				g_ADCValue8 = HAL_ADC_GetValue(&hadc2);
+//				g_MeasurementNumber++;
+//		}//takes several microseconds
+//
+//	  // --- STRAIN
+//	  adcChannel.Channel = ADC_CHANNEL_14;
+//		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+//		HAL_ADC_Start(&hadc2);
+//		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
+//		{
+//				g_ADCValue14 = HAL_ADC_GetValue(&hadc2);
+//				g_MeasurementNumber++;
+//		}//takes several microseconds
+//
+//		// --- STRAIN
+//		adcChannel.Channel = ADC_CHANNEL_15;
+//		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+//		HAL_ADC_Start(&hadc2);
+//		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK){
+//				g_ADCValue15 = HAL_ADC_GetValue(&hadc2);
+//		}
+//
+//		uint32_t g_ADCValue1_1=5;
+//		adcChannel.Channel = ADC_CHANNEL_1;
+//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+//		HAL_ADC_Start(&hadc1);
+//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+//				g_ADCValue1_1 = HAL_ADC_GetValue(&hadc1);
+//		}
+//
+//		uint32_t g_ADCValue1_2=5;
+//		adcChannel.Channel = ADC_CHANNEL_2;
+//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+//		HAL_ADC_Start(&hadc1);
+//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+//				g_ADCValue1_2 = HAL_ADC_GetValue(&hadc1);
+//		}
+//
+//		// --- MOTOR TEMP 105 is room temp rising
+//
+//		adcChannel.Channel = ADC_CHANNEL_4;
+//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+//		HAL_ADC_Start(&hadc1);
+//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+//				g_ADCValue1_4 = HAL_ADC_GetValue(&hadc1);
+//		}
+//
+//		// --- BOARD TEMP 1280 is room temp rising
+//		adcChannel.Channel = ADC_CHANNEL_5;
+//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
+//		HAL_ADC_Start(&hadc1);
+//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
+//				g_ADCValue1_5 = HAL_ADC_GetValue(&hadc1);
+//		}
 
 //
 //
@@ -585,10 +594,11 @@ int main(void)
 			}
 
 			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-			sprintf((char*)buf, "%c#%d %d A %d %d T %d %d                                                                                                                               \r\n",
+			sprintf((char*)buf, "%c#%d %d A %d %d T %d %d A %d %d                                                                                                                              \r\n",
 					ch, (int)(amp*100), (int)(phase_shift*100),
 					g_ADCValue1_4, g_ADCValue1_5,
-					(int)(stiffness*1000), (int)(1000*av_velocity));
+					(int)(stiffness*1000), (int)(1000*av_velocity),
+					adc_buf[0], adc_buf[1]);
 
 			buf[150] = '|';
 			buf[100] = '.';
@@ -729,14 +739,14 @@ static void MX_ADC2_Init(void)
   hadc2.Instance = ADC2;
   hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc2.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc2.Init.ScanConvMode = DISABLE;
+  hadc2.Init.ScanConvMode = ENABLE;
   hadc2.Init.ContinuousConvMode = ENABLE;
   hadc2.Init.DiscontinuousConvMode = DISABLE;
   hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc2.Init.NbrOfConversion = 1;
-  hadc2.Init.DMAContinuousRequests = DISABLE;
+  hadc2.Init.NbrOfConversion = 3;
+  hadc2.Init.DMAContinuousRequests = ENABLE;
   hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc2) != HAL_OK)
   {
@@ -746,7 +756,23 @@ static void MX_ADC2_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_14;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Rank = 3;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1288,11 +1314,15 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Stream3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
 }
 
@@ -1560,6 +1590,14 @@ void calc_lookup(float *lookup){
 
 void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma){
 	huart3.Instance->CR3 &= ~USART_CR3_DMAT;
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin;
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
 }
 
 
