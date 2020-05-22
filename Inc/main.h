@@ -64,14 +64,6 @@ void Error_Handler(void);
 #define LD_1_GPIO_Port GPIOE
 #define LD_2_Pin GPIO_PIN_4
 #define LD_2_GPIO_Port GPIOE
-#define ASENSE_Pin GPIO_PIN_1
-#define ASENSE_GPIO_Port GPIOC
-#define BSENSE_Pin GPIO_PIN_2
-#define BSENSE_GPIO_Port GPIOC
-#define CSENSE_Pin GPIO_PIN_3
-#define CSENSE_GPIO_Port GPIOC
-#define I_Pin GPIO_PIN_1
-#define I_GPIO_Port GPIOA
 #define M0_SO1_Pin GPIO_PIN_2
 #define M0_SO1_GPIO_Port GPIOA
 #define M0_SO2_Pin GPIO_PIN_3
@@ -80,12 +72,6 @@ void Error_Handler(void);
 #define TEMP_GPIO_Port GPIOA
 #define M0_TEMP_Pin GPIO_PIN_5
 #define M0_TEMP_GPIO_Port GPIOA
-#define STRAIN0_Pin GPIO_PIN_4
-#define STRAIN0_GPIO_Port GPIOC
-#define STRAIN1_Pin GPIO_PIN_5
-#define STRAIN1_GPIO_Port GPIOC
-#define VBUS_S_Pin GPIO_PIN_0
-#define VBUS_S_GPIO_Port GPIOB
 #define EN_GATE_Pin GPIO_PIN_14
 #define EN_GATE_GPIO_Port GPIOE
 #define M0_DC_CAL_Pin GPIO_PIN_15

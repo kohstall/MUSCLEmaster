@@ -51,6 +51,8 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
+ADC_HandleTypeDef hadc3;
+DMA_HandleTypeDef hdma_adc1;
 DMA_HandleTypeDef hdma_adc2;
 
 CAN_HandleTypeDef hcan1;
@@ -95,6 +97,7 @@ static void MX_TIM8_Init(void);
 static void MX_TIM13_Init(void);
 static void MX_TIM12_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_ADC3_Init(void);
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
 void playSound(uint16_t periode, uint16_t volume, uint16_t cycles);
@@ -143,7 +146,9 @@ int pwmC = 0;
 int skip_update = 0;
 int skip_update_high_v = 0;
 
-uint16_t adc_buf[30];
+
+uint16_t adc1_buf[30];
+uint16_t adc2_buf[30];
 
 //uint16_t tim12_counter = 5;
 uint32_t tim12_counter = 4000000000;
@@ -207,6 +212,7 @@ int main(void)
   MX_TIM13_Init();
   MX_TIM12_Init();
   MX_TIM2_Init();
+  MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
 
   calc_lookup(lookup);
@@ -257,6 +263,8 @@ int main(void)
 	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_3);
+	//HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+	HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_4);
 
 	playSound( 3, 100, 20);
 
@@ -273,10 +281,10 @@ int main(void)
 
 
 
-	uint32_t g_ADCValue8;
-	uint32_t g_ADCValue14;
-	uint32_t g_ADCValue15;
-	int g_MeasurementNumber;
+//	uint32_t g_ADCValue8;
+//	uint32_t g_ADCValue14;
+//	uint32_t g_ADCValue15;
+//	int g_MeasurementNumber;
 
 	//see https://visualgdb.com/tutorials/arm/stm32/adc/
 	//uint32_t a_val;
@@ -429,8 +437,10 @@ int main(void)
 	HAL_DMA_RegisterCallback(&hdma_usart3_tx, HAL_DMA_XFER_CPLT_CB_ID, &DMAUSARTTransferComplete);
 
 	// --- ADC DMA
-	HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc_buf, 30); // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, 30); // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
+	HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, 30);
 
+	HAL_ADCEx_InjectedStart (&hadc1);
 
 
 
@@ -461,8 +471,6 @@ int main(void)
 		// 3measurements take 25mus --- one just 5mus --- 7 take 50mus
 
 		// --- ADC MEASUREMENTS
-		uint32_t g_ADCValue1_4=5;
-		uint32_t g_ADCValue1_5=5;
 
 //		// --- VBUS
 //		adcChannel.Channel = ADC_CHANNEL_8;
@@ -474,56 +482,7 @@ int main(void)
 //				g_MeasurementNumber++;
 //		}//takes several microseconds
 //
-//	  // --- STRAIN
-//	  adcChannel.Channel = ADC_CHANNEL_14;
-//		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-//		HAL_ADC_Start(&hadc2);
-//		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK)
-//		{
-//				g_ADCValue14 = HAL_ADC_GetValue(&hadc2);
-//				g_MeasurementNumber++;
-//		}//takes several microseconds
-//
-//		// --- STRAIN
-//		adcChannel.Channel = ADC_CHANNEL_15;
-//		HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-//		HAL_ADC_Start(&hadc2);
-//		if (HAL_ADC_PollForConversion(&hadc2, 1) == HAL_OK){
-//				g_ADCValue15 = HAL_ADC_GetValue(&hadc2);
-//		}
-//
-//		uint32_t g_ADCValue1_1=5;
-//		adcChannel.Channel = ADC_CHANNEL_1;
-//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-//		HAL_ADC_Start(&hadc1);
-//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-//				g_ADCValue1_1 = HAL_ADC_GetValue(&hadc1);
-//		}
-//
-//		uint32_t g_ADCValue1_2=5;
-//		adcChannel.Channel = ADC_CHANNEL_2;
-//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-//		HAL_ADC_Start(&hadc1);
-//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-//				g_ADCValue1_2 = HAL_ADC_GetValue(&hadc1);
-//		}
-//
-//		// --- MOTOR TEMP 105 is room temp rising
-//
-//		adcChannel.Channel = ADC_CHANNEL_4;
-//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-//		HAL_ADC_Start(&hadc1);
-//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-//				g_ADCValue1_4 = HAL_ADC_GetValue(&hadc1);
-//		}
-//
-//		// --- BOARD TEMP 1280 is room temp rising
-//		adcChannel.Channel = ADC_CHANNEL_5;
-//		HAL_ADC_ConfigChannel(&hadc1, &adcChannel);
-//		HAL_ADC_Start(&hadc1);
-//		if (HAL_ADC_PollForConversion(&hadc1, 1) == HAL_OK){
-//				g_ADCValue1_5 = HAL_ADC_GetValue(&hadc1);
-//		}
+
 
 //
 //
@@ -593,12 +552,16 @@ int main(void)
 					ch='q';
 			}
 
+			//HAL_ADCEx_InjectedStart (&hadc1);
+			//HAL_ADCEx_InjectedPollForConversion (&hadc1, 1);
+
+			uint32_t inj_val = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+
 			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-			sprintf((char*)buf, "%c#%d %d A %d %d T %d %d A %d %d                                                                                                                              \r\n",
+			sprintf((char*)buf, "%c#%d %d T %d %d A %d %d %d_%d %d %d %d                                                                                                                            \r\n",
 					ch, (int)(amp*100), (int)(phase_shift*100),
-					g_ADCValue1_4, g_ADCValue1_5,
 					(int)(stiffness*1000), (int)(1000*av_velocity),
-					adc_buf[0], adc_buf[1]);
+					inj_val, adc1_buf[0], adc1_buf[1], adc1_buf[2], adc2_buf[0], adc2_buf[1], adc2_buf[2]);
 
 			buf[150] = '|';
 			buf[100] = '.';
@@ -680,6 +643,7 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 0 */
 
   ADC_ChannelConfTypeDef sConfig = {0};
+  ADC_InjectionConfTypeDef sConfigInjected = {0};
 
   /* USER CODE BEGIN ADC1_Init 1 */
 
@@ -689,14 +653,14 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ScanConvMode = ENABLE;
   hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -704,10 +668,41 @@ static void MX_ADC1_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
   */
-  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_8;
+  sConfigInjected.InjectedRank = 1;
+  sConfigInjected.InjectedNbrOfConversion = 3;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_FALLING;
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4;
+  sConfigInjected.AutoInjectedConv = DISABLE;
+  sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected.InjectedOffset = 0;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_2;
+  sConfigInjected.InjectedRank = 2;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_3;
+  sConfigInjected.InjectedRank = 3;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
   {
     Error_Handler();
   }
@@ -754,7 +749,7 @@ static void MX_ADC2_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
   */
-  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Channel = ADC_CHANNEL_11;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
@@ -763,7 +758,7 @@ static void MX_ADC2_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
   */
-  sConfig.Channel = ADC_CHANNEL_14;
+  sConfig.Channel = ADC_CHANNEL_12;
   sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
@@ -771,7 +766,7 @@ static void MX_ADC2_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
   */
-  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Channel = ADC_CHANNEL_13;
   sConfig.Rank = 3;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
@@ -780,6 +775,56 @@ static void MX_ADC2_Init(void)
   /* USER CODE BEGIN ADC2_Init 2 */
 
   /* USER CODE END ADC2_Init 2 */
+
+}
+
+/**
+  * @brief ADC3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC3_Init(void)
+{
+
+  /* USER CODE BEGIN ADC3_Init 0 */
+
+  /* USER CODE END ADC3_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC3_Init 1 */
+
+  /* USER CODE END ADC3_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion) 
+  */
+  hadc3.Instance = ADC3;
+  hadc3.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc3.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc3.Init.ScanConvMode = DISABLE;
+  hadc3.Init.ContinuousConvMode = DISABLE;
+  hadc3.Init.DiscontinuousConvMode = DISABLE;
+  hadc3.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc3.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc3.Init.NbrOfConversion = 1;
+  hadc3.Init.DMAContinuousRequests = DISABLE;
+  hadc3.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC3_Init 2 */
+
+  /* USER CODE END ADC3_Init 2 */
 
 }
 
@@ -966,6 +1011,10 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_OC_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
@@ -988,6 +1037,12 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 500;
+  if (HAL_TIM_OC_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1320,6 +1375,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
@@ -1600,6 +1658,9 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
 }
 
+//void HAL_ADCEx_InjectedConvCpltCallback (ADC_HandleTypeDef *hadc){
+//
+//}
 
 /* USER CODE END 4 */
 
