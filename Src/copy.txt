@@ -1,3 +1,9 @@
+
+	//HAL_ADC_Start(&hadc3);// breaks again//taken from https://community.st.com/s/question/0D50X00009XkXZ3/dma-issues-for-injected-channel-in-adc-multimode
+	//HAL_ADC_Start(&hadc2);
+	//HAL_ADCEx_MultiModeStart_DMA(&hadc1, (uint32_t*)adc1_buf, 30); // TODO this leads to all 0
+
+
 void CIP_EC_Init(ECManagerDataTypeDef * ec){
 
 /** For this quick init code and using the scan mode, make sure

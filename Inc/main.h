@@ -64,12 +64,6 @@ void Error_Handler(void);
 #define LD_1_GPIO_Port GPIOE
 #define LD_2_Pin GPIO_PIN_4
 #define LD_2_GPIO_Port GPIOE
-#define M0_SO1_Pin GPIO_PIN_2
-#define M0_SO1_GPIO_Port GPIOA
-#define M0_SO2_Pin GPIO_PIN_3
-#define M0_SO2_GPIO_Port GPIOA
-#define TEMP_Pin GPIO_PIN_4
-#define TEMP_GPIO_Port GPIOA
 #define M0_TEMP_Pin GPIO_PIN_5
 #define M0_TEMP_GPIO_Port GPIOA
 #define EN_GATE_Pin GPIO_PIN_14
