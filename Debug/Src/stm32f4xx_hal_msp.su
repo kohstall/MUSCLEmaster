@@ -14,3 +14,5 @@ stm32f4xx_hal_msp.c:859:6:HAL_TIM_Base_MspDeInit	16	static
 stm32f4xx_hal_msp.c:973:6:HAL_TIM_Encoder_MspDeInit	16	static
 stm32f4xx_hal_msp.c:1021:6:HAL_UART_MspInit	48	static
 stm32f4xx_hal_msp.c:1079:6:HAL_UART_MspDeInit	16	static
+stm32f4xx_hal_msp.c:1113:6:HAL_PCD_MspInit	48	static
+stm32f4xx_hal_msp.c:1149:6:HAL_PCD_MspDeInit	16	static
