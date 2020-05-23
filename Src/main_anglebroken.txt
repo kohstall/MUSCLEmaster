@@ -40,7 +40,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ENC_STEPS 2000 // edge changes on A and B outputs
+#define ENC_STEPS_HALF 1000 // to be set equal to  ENC_STEPS / 2
+#define ENC_RESOLUTION 16384 // 14 bit resolution for angle reading via SPI
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -112,7 +114,6 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
 //void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
 void calc_lookup(float *lookup);
 void myDelay(void);
-void delay_SPI(void);
 void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma);
 
 /* USER CODE END PFP */
@@ -137,7 +138,9 @@ float phase_shift = PI/2;
 float stiffness = 0;
 
 // --- INITIALIZE OTHER GLOBALS
-int16_t EncVal;
+uint16_t EncVal=0;
+int32_t EncVal_total;
+int16_t rotation_counter;
 int16_t last_EncVal;
 float phase = 0;
 int int_phase = 0;
@@ -165,6 +168,8 @@ uint32_t field_amplitude = 0;
 //uint16_t tim12_counter = 5;
 uint32_t tim12_counter = 4000000000;
 
+uint8_t buf_error[100];
+
 // --- LOOKUPS
 
 float lookup[210];
@@ -183,6 +188,7 @@ int main(void)
   /* USER CODE BEGIN 1 */
 	//ls /dev/tty*
 	//screen /dev/tty.usbmodem14203 115200          --- stop: control a \
+
 	//Drivers/CMSIS/DSP/Include
 	//ARM_MATH_CM4
 
@@ -230,6 +236,7 @@ int main(void)
   calc_lookup(lookup);
 
 	uint8_t buf[300];
+	buf_error[0] = '\0';
 	//uint8_t plot[300];
 
 	char ch='q';
@@ -401,11 +408,9 @@ int main(void)
 	//TODO: Error handling
 	address = AS_ADDR_SETTINGS1 | AS_WRITE ;
 	value = 0x0080 | AS_ODD;
-	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint16_t *)&value, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
@@ -413,25 +418,19 @@ int main(void)
 	// --- set steps 2000steps 500 pulses
 	address = AS_ADDR_SETTINGS2 | AS_WRITE ;
 	value = 0x0020 | AS_ODD;
-	//value = 0x00E0 | AS_ODD;
-	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint16_t *)&value, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 
 	// --- read angle
 	address = 0x3FFE | AS_READ ;
-
 	uint16_t angle = 0x0000;
-	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);//this is the value
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Receive(&hspi2, (uint16_t *)&angle, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
@@ -439,7 +438,7 @@ int main(void)
 
 	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
 	angle &= AS_DATA_MASK;
-	EncVal = (uint16_t) ((float)angle /16384.0 * 2000.0);
+	EncVal = (uint16_t) ((float)angle /ENC_RESOLUTION * ENC_STEPS);
 	last_EncVal = EncVal;
 	TIM8->CNT = EncVal;
 
@@ -466,16 +465,13 @@ int main(void)
 //
 //
 
-
-		sprintf((char*)buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
-				angle, EncVal ,
-				angle, EncVal );
-		huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-		HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
-
-		HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
-
-
+//	sprintf((char*)buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
+//			angle, EncVal ,
+//			angle, EncVal );
+//	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+//	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+//
+//	HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
 
   /* USER CODE END 2 */
 
@@ -600,29 +596,19 @@ int main(void)
 			uint32_t val_SO2 = HAL_ADCEx_InjectedGetValue (&hadc3, 1);
 			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
 
-//			// --- read angle
-				uint8_t address8[2];
-				uint8_t angle8[2];
-				address8[1]= 0x7F;
-				address8[0]= 0xFE;
-				//address8 = {0xFE, 0x7F};
-				//address = 0x3FFE | AS_READ ;
-				delay_SPI();
-				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-				HAL_SPI_Transmit(&hspi2, (uint8_t *)address8, 1, 1);//this is the value
-				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-				delay_SPI();
-				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-				HAL_SPI_Receive(&hspi2, (uint8_t *)&angle8, 1, 1);
-				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-				uint16_t angle16 = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
-				angle &= AS_DATA_MASK;
-				angle16 &= AS_DATA_MASK;
-
+			// --- read angle
+			address = 0x3FFE | AS_READ ;
+			uint16_t angle = 0x0000;
+			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+			HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);//this is the value
+			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+			HAL_SPI_Receive(&hspi2, (uint16_t *)&angle, 1, 1);
+			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 
 			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-			sprintf((char*)buf, "%c %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
-					ch, angle16, (uint32_t)angle16, //(int)(amp*100), (int)(phase_shift*100),
+			sprintf((char*)buf, "%c %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
+					ch, angle,//(int)(amp*100), (int)(phase_shift*100),
 					//(int)(stiffness*1000),
 					(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
 					(int)(1000*av_velocity),
@@ -649,6 +635,11 @@ int main(void)
 //			buf[100] = '.';
 //			buf[50] = '|';
 //			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
+
+			if (buf_error[0] != '\0'){
+				strcat(buf, buf_error);
+				buf_error[0] = '\0';
+			}
 
 
 			//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
@@ -1209,7 +1200,7 @@ static void MX_SPI2_Init(void)
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi2.Init.NSS = SPI_NSS_HARD_OUTPUT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -1757,13 +1748,6 @@ void delayMs(int delay){
   	for (i=0; i<1; i++);
   }
 }
-
-void delay_SPI(void){
-	int g =0;
-	for(int i=0; i<20; i++){
-		g++;
-	}
-}
 // --- INTERRUPT  ----------------------------------------------------
 // --- this was used to try interrupt - now the ROT0_A_U_Pin is configured for rot sensor
 //void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
@@ -1800,8 +1784,21 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	if (GPIO_Pin == ROT0_I_W_Pin){
+		// TODO rotation_counter
+		// TODO raise error
+		// TODO make only positive
+		// TODO raising versus falling depending on direction
+
+		strcat(buf_error, "test error\r\n");
+
 		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-		TIM8->CNT = 0;     //TODO: there is acually some stepping happening under the I pulse so we have to distinguish between step from right and step from left
+
+//		if (last_EncVal > ENC_STEPS_HALF){
+//			rotation_counter++;
+//		}
+
+		//TIM8->CNT = 0;     //TODO: there is acually some stepping happening under the I pulse so we have to distinguish between step from right and step from left
+
 		val_SO1_buf_index = 0;
 	}
 	else{
@@ -1820,6 +1817,12 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 	//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
 	if(htim->Instance == TIM8){
 
+		EncVal = TIM8->CNT;//takes 200ns
+//		if (EncVal<0){
+//			EncVal += ENC_STEPS;
+//			rotation_counter--;
+//		}
+
 		if (skip_update){ //TODO somehow the Callback is triggered at this strange 25% duty cycle so we just look at every second update to get a constant frequency
 			skip_update = 0;
 		}
@@ -1829,9 +1832,8 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 			debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
 
-			EncVal = TIM8->CNT;//takes 200ns
 
-			// --- phase calc
+			// --- CALCULATE PHASE SHIFT  ---------------------------------------------
 
 			if (val_SO1_buf_index < 72){
 				val_SO1_buf[val_SO1_buf_index] = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
@@ -1883,7 +1885,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 
 
-
+				// --- CALCULATE VELOCITY ---------------------------------------------
 
 				//tim12_counter = TIM12->CNT;
 				tim12_counter = TIM2->CNT;
@@ -1910,7 +1912,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 				//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
 				// --- get angle from encoder 0...2000
 
-
+				// --- CALCULATE PWM ---------------------------------------------
 
 				phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
 				phase -= phase0;
