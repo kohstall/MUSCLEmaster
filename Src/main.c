@@ -154,6 +154,13 @@ uint16_t adc1_buf[30];
 uint16_t adc2_buf[30];
 uint16_t adc3_buf[30];
 
+uint16_t val_SO1_buf_index=0;
+uint32_t val_SO1_buf[200];
+
+float field_phase_shift = 0;
+float field_phase_shift_pihalf = 0;
+uint32_t field_amplitude = 0;
+
 //uint16_t tim12_counter = 5;
 uint32_t tim12_counter = 4000000000;
 
@@ -577,9 +584,10 @@ int main(void)
 			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
 
 			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-			sprintf((char*)buf, "%c# %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
+			sprintf((char*)buf, "%c F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
 					ch, //(int)(amp*100), (int)(phase_shift*100),
 					//(int)(stiffness*1000),
+					(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
 					(int)(1000*av_velocity),
 					EncVal,
 					val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
@@ -1200,9 +1208,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 1;
+  htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 2048;
+  htim1.Init.Period = 4096;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -1292,7 +1300,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 4;
+  htim2.Init.Prescaler = 7;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1402,9 +1410,9 @@ static void MX_TIM9_Init(void)
 
   /* USER CODE END TIM9_Init 1 */
   htim9.Instance = TIM9;
-  htim9.Init.Prescaler = 2;
+  htim9.Init.Prescaler = 167;
   htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim9.Init.Period = 4096;
+  htim9.Init.Period = 1000;
   htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
@@ -1459,7 +1467,7 @@ static void MX_TIM12_Init(void)
 
   /* USER CODE END TIM12_Init 1 */
   htim12.Instance = TIM12;
-  htim12.Init.Prescaler = 4;
+  htim12.Init.Prescaler = 7;
   htim12.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim12.Init.Period = 65535;
   htim12.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1651,7 +1659,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOE, LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin 
@@ -1664,8 +1672,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC13 PC14 PC15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1750,6 +1758,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	if (GPIO_Pin == ROT0_I_W_Pin){
 		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
 		TIM8->CNT = 0;     //TODO: there is acually some stepping happening under the I pulse so we have to distinguish between step from right and step from left
+		val_SO1_buf_index = 0;
 	}
 	else{
 		__NOP();
@@ -1771,8 +1780,48 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 			skip_update = 0;
 		}
 		else{
-
 			skip_update = 1;
+
+			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+			debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+
+			EncVal = TIM8->CNT;//takes 200ns
+
+			// --- phase calc
+
+			if (val_SO1_buf_index < 72){
+				val_SO1_buf[val_SO1_buf_index] = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
+				val_SO1_buf_index++;
+			}
+			if (val_SO1_buf_index == 72){  // some hints that this takes 10mus
+
+				int32_t cos_part = 0;
+				int32_t sin_part = 0;
+
+				for (int i=0; i< 72; i++){
+				    if (i<18){
+				      cos_part += val_SO1_buf[i];
+				      sin_part += val_SO1_buf[i];}
+				    else if (i<36){
+				      cos_part -= val_SO1_buf[i];
+				      sin_part += val_SO1_buf[i];}
+				    else if (i<54){
+				      cos_part -= val_SO1_buf[i];
+				      sin_part -= val_SO1_buf[i];}
+				    else{
+				      cos_part += val_SO1_buf[i];
+				      sin_part -= val_SO1_buf[i];}
+				}
+				field_amplitude = cos_part*cos_part + sin_part*sin_part;
+				field_phase_shift = (float) cos_part / (float) sin_part;
+				field_phase_shift_pihalf = (float) sin_part / (float) cos_part;
+
+				val_SO1_buf_index++;
+			}
+
+
+
+
 
 			if (abs(av_velocity) > 5 &&  skip_update_high_v == 1){
 				skip_update_high_v = 0;
@@ -1781,11 +1830,16 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 
+
+
+
+				GPIOC->BSRR = GPIO_PIN_13; // DEBUG
+
 				skip_update_high_v = 1;
 
 
 
-				EncVal = TIM8->CNT;//takes 200ns
+
 
 				//tim12_counter = TIM12->CNT;
 				tim12_counter = TIM2->CNT;
@@ -1886,6 +1940,8 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 				TIM1->CCR1 = pwmA; //takes<150ns
 				TIM1->CCR2 = pwmB; //takes<150ns
 				TIM1->CCR3 = pwmC; //takes<150ns
+
+				GPIOC->BSRR = GPIO_PIN_13  << 16U ; // DEBUG
 			}
 		}
 	}
