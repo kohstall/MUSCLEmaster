@@ -573,9 +573,11 @@ int main(void)
 			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
 
 			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-			sprintf((char*)buf, "%c# A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
+			sprintf((char*)buf, "%c# %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
 					ch, //(int)(amp*100), (int)(phase_shift*100),
-					//(int)(stiffness*1000), (int)(1000*av_velocity),
+					//(int)(stiffness*1000),
+					(int)(1000*av_velocity),
+					EncVal,
 					val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
 					val_SO1, val_BSENSE, val_STRAIN1, val_TEMP,
 					val_SO2, val_CSENSE,
@@ -634,12 +636,11 @@ void SystemClock_Config(void)
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
   /** Initializes the CPU, AHB and APB busses clocks 
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
   RCC_OscInitStruct.PLL.PLLN = 84;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 3;
@@ -1284,7 +1285,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
+  htim2.Init.Prescaler = 4;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1736,7 +1737,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 				//tim12_counter = TIM12->CNT;
 				tim12_counter = TIM2->CNT;
-				if (tim12_counter > 10000){ // TODO fix the issue that this gets almost never called when velocity is super low.
+				if (tim12_counter > 2000){ // TODO fix the issue that this gets almost never called when velocity is super low.
 					//TIM12->CNT = 0;
 					TIM2->CNT = 0;
 					int EncDiff = EncVal-last_EncVal;
@@ -1746,8 +1747,8 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 					else if (EncDiff < -1000){
 						EncDiff += 2000;
 					}
-					velocity = (float)(EncDiff) / (float)tim12_counter;
-					velocity *= 10500; // /2000 steps/rotation / 21000000 counts/sec  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
+					velocity = (float)(EncDiff) / (float)tim12_counter; //[steps/counts]
+					velocity *= 10500; // /2000 steps/round * 21000000 counts/sec --> [round/sec]  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
 					av_velocity = 0.95 * av_velocity + 0.05 * velocity;
 					last_EncVal = EncVal;
 				}
