@@ -81,6 +81,7 @@ SPI_HandleTypeDef hspi2;
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim5;
 TIM_HandleTypeDef htim6;
 TIM_HandleTypeDef htim8;
 TIM_HandleTypeDef htim9;
@@ -122,6 +123,7 @@ static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_RTC_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
 void playSound(uint16_t periode, uint16_t volume, uint16_t cycles);
@@ -143,9 +145,12 @@ void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma);
 void EncoderStepCallback(void);
 
 void step_through_pole_angles(void);
+void step_through_pwm_percent(void);
 void set_pwm_off(void);
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+
+void update_pwm(void);
 
 /* USER CODE END PFP */
 
@@ -207,8 +212,16 @@ uint8_t buf_msg[50];
 bool print2uart = true;
 
 uint16_t pole_angles[N_PHASES * N_POLES];
+uint16_t pole_angle_by_amp[20];
+float av_start_angle;
 
 bool normal_operation_enabled = true;
+
+uint8_t mode_of_operation = 0; // 0=startup 1=standard
+//enum mode_of_operation{ STARTUP, STANDARD};
+
+time_of_last_pwm_update = 0;
+//dtime_since_last_pwm_update = 4294967295;
 
 // --- LOOKUPS
 
@@ -273,6 +286,7 @@ int main(void)
   MX_RTC_Init();
   MX_TIM6_Init();
   MX_TIM3_Init();
+  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 
   calc_lookup(lookup);
@@ -328,6 +342,12 @@ int main(void)
 	playSound( 3, 100, 20);
 
 	HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, GPIO_PIN_SET);
+
+
+	// --- used for heartbeat of microcontroller
+	HAL_TIM_Base_Start_IT(&htim3);
+	// --- 32bit timer used to measure time in10mus
+	HAL_TIM_Base_Start(&htim5);
 
 	// --- ADC --------------------------------------
 	ADC_ChannelConfTypeDef adcChannel;
@@ -532,18 +552,22 @@ int main(void)
 //
 
 
-		sprintf((char*)buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
-				angle, EncVal ,
-				angle, EncVal );
-		huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-		HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+	sprintf((char*)buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
+			angle, EncVal ,
+			angle, EncVal );
+	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 
-		HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
+	HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
 
 
-		HAL_TIM_Base_Start(&htim6);
-		HAL_TIM_Base_Start(&htim3);
-		//HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_1);
+	//HAL_TIM_Base_Start(&htim6);
+	//HAL_TIM_Base_Start(&htim3);
+
+
+	//HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_1);
+
+	mode_of_operation = 1;
 
   /* USER CODE END 2 */
 
@@ -665,6 +689,9 @@ int main(void)
 				case 'S':
 					step_through_pole_angles();
 					break;
+				case 'P':
+					step_through_pwm_percent();
+					break;
 				default:
 					ch='q';
 			}
@@ -703,11 +730,13 @@ int main(void)
 				angle = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
 				angle &= AS_DATA_MASK;
 
+				uint32_t time10mus = TIM5->CNT;
+
 				if (print2uart){
 
 				//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-				sprintf((char*)buf, "%c %d %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
-						ch, rotation_counter, angle, (uint32_t)angle, //(int)(amp*100), (int)(phase_shift*100),
+				sprintf((char*)buf, "%c %d %d %d %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
+						ch, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, (uint32_t)angle, //(int)(amp*100), (int)(phase_shift*100),
 						//(int)(stiffness*1000),
 						(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
 						(int)(1000*av_velocity),
@@ -1568,6 +1597,51 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 839;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 4294967295;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+
+}
+
+/**
   * @brief TIM6 Initialization Function
   * @param None
   * @retval None
@@ -2011,7 +2085,43 @@ void step_through_pole_angles(void){
 	}
 	set_pwm_off();
 	normal_operation_enabled = true;
+
+	float sum = 0;
+	float enc_steps_per_A2B = (float)ENC_STEPS / (float)(N_POLES * N_PHASES);
+	float enc_steps_per_A2A = (float)ENC_STEPS / (float)N_POLES;
+	for (uint8_t i = 0; i < N_POLES * N_PHASES ; i++){
+		float reduced_pole_angle = pole_angles[i] - i * enc_steps_per_A2B ;//should be 95.238=2000/21 = ENC_STEPS/ (N_POLES * N_PHASES)
+		if (reduced_pole_angle > -ENC_STEPS_HALF){
+			sum += reduced_pole_angle;
+		}
+		else{
+			sum += reduced_pole_angle + ENC_STEPS;
+		}
+		av_start_angle = sum / (float)(N_POLES * N_PHASES);
+		while(av_start_angle > enc_steps_per_A2A){
+			av_start_angle -= enc_steps_per_A2A;
+		}
+		//float av_angle_first_A =
+
+	}
+
+
 }
+
+void step_through_pwm_percent(void){
+	normal_operation_enabled = false;
+	set_pwm_off();
+	HAL_Delay(100);
+	for (uint8_t percent = 0; percent < 10 ; percent++){
+		TIM1->CCR1 = percent * PWM_1PERCENT;
+		HAL_Delay(200);
+		pole_angle_by_amp[percent]=TIM8->CNT;
+	}
+	set_pwm_off();
+	normal_operation_enabled = true;
+}
+
+
 
 
 void delayMs(int delay){
@@ -2048,6 +2158,9 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 	// TODO disable interrupt for the duration of sound
 	//HAL_NVIC_DisableIRQ(TIM8_UP_TIM13_IRQn);
 	//HAL_Delay(1000);
+	normal_operation_enabled = false;
+	set_pwm_off();
+	HAL_Delay(10);
 
 	for (uint16_t i=0; i<cycles; i++){
 		TIM1->CCR1 = 0; //takes<150ns
@@ -2057,6 +2170,10 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 		TIM1->CCR2 = 0; //takes<150ns
 		HAL_Delay(periode);
 	}
+	set_pwm_off();
+	normal_operation_enabled = true;
+
+
 
 	//HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 }
@@ -2085,9 +2202,16 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 //		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
 //	}
 //}
+
+
+// --- 1ms heartbeat of the microcontroller
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 
+	if (TIM5->CNT - time_of_last_pwm_update  > 95){ //100 time time_step = heartbeat
 		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+		update_pwm();
+	}
+
 
 }
 
@@ -2224,8 +2348,6 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 
 
-
-
 				GPIOC->BSRR = GPIO_PIN_13; // DEBUG
 
 				skip_update_high_v = 1;
@@ -2233,7 +2355,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 
 
-
+				// --- velocity calculation
 				//tim12_counter = TIM12->CNT;
 				tim12_counter = TIM2->CNT;
 				if (tim12_counter > 2000){ // TODO fix the issue that this gets almost never called when velocity is super low.
@@ -2252,89 +2374,10 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 					last_EncVal_v = EncVal;
 				}
 
-
-
-				//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
-				//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
-				//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
-				// --- get angle from encoder 0...2000
+				update_pwm();
 
 
 
-				phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
-				phase -= phase0;
-
-
-
-
-				float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
-				float modified_amp = amp + stiffness * av_velocity * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
-				//u0 *= amp;  //takes<200ns
-				u0 *= modified_amp;  //takes<200ns
-				u0 *= run_motor;  //takes<200ns
-
-				if (direction == 1){
-					phase -= phase_shift;  //takes<200ns
-				}
-				else {
-					phase += phase_shift;
-				}
-
-	//
-
-
-
-				phase *= 100;
-				int_phase = (int) phase;
-				int_phase = int_phase % 628;
-				if (int_phase < 0) {
-					int_phase += 628;
-				}
-
-				float uA = 0;
-				float uB = 0;
-				float uC = 0;
-
-
-		//
-		//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-		//    			uB = lookup[2]; // takes 3mus
-		//    			uC = 0;
-
-				// ---- lookup  this optimized routine brings roundtrip down to 5mus
-
-				if  (int_phase < 210)	{ //0...209
-					uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-					uB = lookup[210 - 1 - int_phase]; // takes 3mus
-					uC = 0;
-				}
-			 else if  (int_phase < 420){	 //210...419
-					uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-					uB = lookup[int_phase - 210]; // takes 3mus
-					uC = lookup[420 - 1 - int_phase];
-			 }
-			 else	{  //420...629
-					uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-					uB = 0; // takes 3mus
-					uC = lookup[int_phase - 420];
-				}
-
-
-				pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
-				pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
-				pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
-
-				// ---- end lookup
-
-				debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-				// --- MOTOR DRIVER ----------------------------------------------------
-				// --- PWM pulses 0...2048
-				if (normal_operation_enabled){
-					TIM1->CCR1 = pwmA; //takes<150ns
-					TIM1->CCR2 = pwmB; //takes<150ns
-					TIM1->CCR3 = pwmC; //takes<150ns
-				}
 
 				GPIOC->BSRR = GPIO_PIN_13  << 16U ; // DEBUG
 			}
@@ -2343,6 +2386,85 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 
 	//counterISR++;
+
+}
+
+void update_pwm(void){
+
+	//dtime_since_last_pwm_update = TIM5->CNT - time_of_last_pwm_update;
+	time_of_last_pwm_update = TIM5->CNT;
+
+	phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
+	phase -= phase0;
+
+	float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
+	float modified_amp = amp + stiffness * av_velocity * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
+	//u0 *= amp;  //takes<200ns
+	u0 *= modified_amp;  //takes<200ns
+	u0 *= run_motor;  //takes<200ns
+
+	if (direction == 1){
+		phase -= phase_shift;  //takes<200ns
+	}
+	else {
+		phase += phase_shift;
+	}
+
+//
+
+
+
+	phase *= 100;
+	int_phase = (int) phase;
+	int_phase = int_phase % 628;
+	if (int_phase < 0) {
+		int_phase += 628;
+	}
+
+	float uA = 0;
+	float uB = 0;
+	float uC = 0;
+
+
+//
+//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+//    			uB = lookup[2]; // takes 3mus
+//    			uC = 0;
+
+	// ---- lookup  this optimized routine brings roundtrip down to 5mus
+
+	if  (int_phase < 210)	{ //0...209
+		uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+		uB = lookup[210 - 1 - int_phase]; // takes 3mus
+		uC = 0;
+	}
+ else if  (int_phase < 420){	 //210...419
+		uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+		uB = lookup[int_phase - 210]; // takes 3mus
+		uC = lookup[420 - 1 - int_phase];
+ }
+ else	{  //420...629
+		uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+		uB = 0; // takes 3mus
+		uC = lookup[int_phase - 420];
+	}
+
+
+	pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+	pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
+	pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
+
+	// ---- end lookup
+
+	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
+	// --- MOTOR DRIVER ----------------------------------------------------
+	// --- PWM pulses 0...2048
+	if (normal_operation_enabled){
+		TIM1->CCR1 = pwmA; //takes<150ns
+		TIM1->CCR2 = pwmB; //takes<150ns
+		TIM1->CCR3 = pwmC; //takes<150ns
+	}
 
 }
 
