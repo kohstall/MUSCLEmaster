@@ -192,3 +192,67 @@ channel_position = 0;
 
 
 }
+
+// None of those work
+
+void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim){
+	if(htim->Instance == TIM8){
+	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+	delay_SPI();
+					debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+					debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+								debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+								debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+								delay_SPI();
+											debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+}}
+
+void HAL_TIM_TriggerHalfCpltCallback(TIM_HandleTypeDef *htim){
+	if(htim->Instance == TIM8){
+	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+	delay_SPI();
+					debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+					debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+								debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+								debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+								delay_SPI();
+											debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+}}
+
+void HAL_TIM_IC_CaptureHalfCpltCallback(TIM_HandleTypeDef *htim){
+	if(htim->Instance == TIM8){
+	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+	delay_SPI();
+					debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+					debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+								debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+								debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+								delay_SPI();
+											debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+}}
+
+//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim){
+//	if(htim->Instance == TIM8){
+//	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//	delay_SPI();
+//					debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//					debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//								debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//								debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//								delay_SPI();
+//											debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//}}
+
+
+sprintf((char*)buf_error_msg, "encoder_belief %d ", encoder_belief);
+		strcat(buf_error_msg, "from encoder\r\n");
+		if (strlen(buf_error_msg) + strlen(buf_error) < 100){
+			strcat(buf_error, buf_error_msg);
+		}
+		else {
+			buf_error[97] = '.';
+		}

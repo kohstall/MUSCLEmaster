@@ -24,10 +24,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #define __FPU_PRESENT             1U
+#define USE_HAL_TIM_REGISTER_CALLBACKS 1
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <stdbool.h>
 //#include "arm_math.h"
 //#include "arm_math.h"
 
@@ -40,6 +42,17 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+//#define USE_HAL_TIM_REGISTER_CALLBACKS 1    // TODO work out other callback for encoder
+#define ENC_STEPS 2000 // edge changes on A and B outputs - Note that ARR in TIM8 needs to be set to ENC_STEPS-1
+#define ENC_STEPS_HALF 1000 // to be set equal to  ENC_STEPS / 2
+#define ENC_RESOLUTION 16384 // 14 bit resolution for angle reading via SPI
+#define ENC_TOLERANCE 2
+#define N_POLES 7
+#define N_PHASES 3
+
+#define PWM_STEPS 4096
+#define PWM_1PERCENT 41 // set this to 1% of the PWM_STEP
 
 /* USER CODE END PD */
 
@@ -61,10 +74,14 @@ CAN_HandleTypeDef hcan1;
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
 
+RTC_HandleTypeDef hrtc;
+
 SPI_HandleTypeDef hspi2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim6;
 TIM_HandleTypeDef htim8;
 TIM_HandleTypeDef htim9;
 TIM_HandleTypeDef htim12;
@@ -102,18 +119,33 @@ static void MX_TIM12_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
+static void MX_RTC_Init(void);
+static void MX_TIM6_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
 void playSound(uint16_t periode, uint16_t volume, uint16_t cycles);
 //void TIM8_IRQHandler(void);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
+
+void HAL_TIM_IC_CaptureHalfCpltCallback(TIM_HandleTypeDef *htim);
+void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
+void HAL_TIM_TriggerHalfCpltCallback(TIM_HandleTypeDef *htim);
+//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
+
 //void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
 //void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
 void calc_lookup(float *lookup);
 void myDelay(void);
 void delay_SPI(void);
 void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma);
+void EncoderStepCallback(void);
+
+void step_through_pole_angles(void);
+void set_pwm_off(void);
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 
 /* USER CODE END PFP */
 
@@ -139,6 +171,10 @@ float stiffness = 0;
 // --- INITIALIZE OTHER GLOBALS
 int16_t EncVal;
 int16_t last_EncVal;
+int16_t last_EncVal_v;
+int16_t rotation_counter = 0;
+//int16_t rotation_counter_abs = 0; // TODO if useful
+bool counter0ing_at0crossing = true;
 float phase = 0;
 int int_phase = 0;
 float velocity = 0;
@@ -164,6 +200,15 @@ uint32_t field_amplitude = 0;
 
 //uint16_t tim12_counter = 5;
 uint32_t tim12_counter = 4000000000;
+
+uint8_t buf_msgs[100];
+uint8_t buf_msg[50];
+
+bool print2uart = true;
+
+uint16_t pole_angles[N_PHASES * N_POLES];
+
+bool normal_operation_enabled = true;
 
 // --- LOOKUPS
 
@@ -225,6 +270,9 @@ int main(void)
   MX_TIM2_Init();
   MX_ADC3_Init();
   MX_USB_OTG_FS_PCD_Init();
+  MX_RTC_Init();
+  MX_TIM6_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   calc_lookup(lookup);
@@ -391,56 +439,69 @@ int main(void)
 	HAL_TIM_Encoder_Start_IT(&htim8, TIM_CHANNEL_ALL );
 
 	// --- ROTATION SENSOR SETTINGS ----------------------------------------------------
+	//TODO: Error handling
 
-	//ROT0_nCS_GPIO_Port->BSRR = (uint32_t)ROT0_nCS_Pin << 16U;
-
-	uint16_t address = 0x0000;
-	uint16_t value = 0x0000;
+	uint8_t spi_address_8[2];
+	uint8_t spi_value_8[2];
 
 	// --- set ABI and enable PWM
-	//TODO: Error handling
-	address = AS_ADDR_SETTINGS1 | AS_WRITE ;
-	value = 0x0080 | AS_ODD;
+	spi_address_8[1]= 0x00;
+	spi_address_8[0]= 0x18;
+	spi_value_8[1]= 0x80;
+	spi_value_8[0]= 0x80;
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-	HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-	HAL_SPI_Transmit(&hspi2, (uint16_t *)&value, 1, 1);
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_value_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 
 	// --- set steps 2000steps 500 pulses
-	address = AS_ADDR_SETTINGS2 | AS_WRITE ;
-	value = 0x0020 | AS_ODD;
+	spi_address_8[1]= 0x80;
+	spi_address_8[0]= 0x19;
+	//address = AS_ADDR_SETTINGS2 | AS_WRITE ; // 0x8019
+	//value = 0x0020 | AS_ODD; // 0x8020
 	//value = 0x00E0 | AS_ODD;
+	spi_value_8[1]= 0x80;
+	spi_value_8[0]= 0x20;
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-	HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-	HAL_SPI_Transmit(&hspi2, (uint16_t *)&value, 1, 1);
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_value_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 
 	// --- read angle
-	address = 0x3FFE | AS_READ ;
+	HAL_Delay(1);
 
-	uint16_t angle = 0x0000;
+	uint8_t angle8[2];
+	uint16_t angle;
+
+	//for (int i=0; i<4; i++)
+	spi_address_8[1]= 0x7F;
+	spi_address_8[0]= 0xFE;
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-	HAL_SPI_Transmit(&hspi2, (uint16_t *)&address, 1, 1);//this is the value
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-	HAL_SPI_Receive(&hspi2, (uint16_t *)&angle, 1, 1);
+	HAL_SPI_Receive(&hspi2, (uint8_t *)&angle8, 1, 1);
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+
+	angle = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
+	angle &= AS_DATA_MASK;
 
 
 	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
-	angle &= AS_DATA_MASK;
+	//angle &= AS_DATA_MASK;
 	EncVal = (uint16_t) ((float)angle /16384.0 * 2000.0);
 	last_EncVal = EncVal;
+	last_EncVal_v = EncVal;
 	TIM8->CNT = EncVal;
 
 
@@ -453,6 +514,10 @@ int main(void)
 
 	// --- UART DMA
 	HAL_DMA_RegisterCallback(&hdma_usart3_tx, HAL_DMA_XFER_CPLT_CB_ID, &DMAUSARTTransferComplete);
+
+
+
+	//HAL_TIM_RegisterCallback(&htim8, HAL_TIM_IC_CAPTURE_CB_ID, &EncoderStepCallback );
 
 	// --- ADC DMA
 	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, 30); // this is the only one working // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
@@ -476,11 +541,16 @@ int main(void)
 		HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
 
 
+		HAL_TIM_Base_Start(&htim6);
+		HAL_TIM_Base_Start(&htim3);
+		//HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+
 
 
 
@@ -571,7 +641,7 @@ int main(void)
 				case 'r':
 					direction *= -1;
 					break;
-				case 'p':
+				case 'z':
 					playSound( 1, 20, 100);
 					break;
 				case 'u':
@@ -579,6 +649,21 @@ int main(void)
 					break;
 				case 'j':
 					stiffness -= 0.001;
+					break;
+				case 'p':
+					//print2uart = false;
+					print2uart = !print2uart;
+					break;
+				case 'o':
+					//HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, 1);
+					EN_GATE_GPIO_Port->BSRR = (uint32_t)EN_GATE_Pin << 16U;
+					break;
+				case 'l':
+					HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, 1);
+					EN_GATE_GPIO_Port->BSRR = EN_GATE_Pin ;
+					break;
+				case 'S':
+					step_through_pole_angles();
 					break;
 				default:
 					ch='q';
@@ -601,60 +686,67 @@ int main(void)
 			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
 
 //			// --- read angle
-				uint8_t address8[2];
-				uint8_t angle8[2];
-				address8[1]= 0x7F;
-				address8[0]= 0xFE;
+				//uint8_t spi_address_8[2];
+				//uint8_t angle8[2];
+				spi_address_8[1]= 0x7F;
+				spi_address_8[0]= 0xFE;
 				//address8 = {0xFE, 0x7F};
 				//address = 0x3FFE | AS_READ ;
 				delay_SPI();
 				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-				HAL_SPI_Transmit(&hspi2, (uint8_t *)address8, 1, 1);//this is the value
+				HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 				delay_SPI();
 				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 				HAL_SPI_Receive(&hspi2, (uint8_t *)&angle8, 1, 1);
 				HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-				uint16_t angle16 = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
+				angle = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
 				angle &= AS_DATA_MASK;
-				angle16 &= AS_DATA_MASK;
+
+				if (print2uart){
+
+				//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
+				sprintf((char*)buf, "%c %d %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
+						ch, rotation_counter, angle, (uint32_t)angle, //(int)(amp*100), (int)(phase_shift*100),
+						//(int)(stiffness*1000),
+						(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
+						(int)(1000*av_velocity),
+						EncVal,
+						val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
+						val_SO1, val_BSENSE, val_STRAIN1, val_TEMP,
+						val_SO2, val_CSENSE,
+						adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4],
+						//adc1_buf[5], adc1_buf[6], adc1_buf[7], adc1_buf[8], adc1_buf[9],
+						//adc1_buf[10], adc1_buf[11], adc1_buf[12], adc1_buf[13], adc1_buf[14]);
+						adc2_buf[0], adc2_buf[1], adc2_buf[2], adc2_buf[3], adc2_buf[4],
+						adc3_buf[0], adc3_buf[1], adc3_buf[2], adc3_buf[3], adc3_buf[4]);
 
 
-			//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-			sprintf((char*)buf, "%c %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d             \r\n",
-					ch, angle16, (uint32_t)angle16, //(int)(amp*100), (int)(phase_shift*100),
-					//(int)(stiffness*1000),
-					(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
-					(int)(1000*av_velocity),
-					EncVal,
-					val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
-					val_SO1, val_BSENSE, val_STRAIN1, val_TEMP,
-					val_SO2, val_CSENSE,
-					adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4],
-					//adc1_buf[5], adc1_buf[6], adc1_buf[7], adc1_buf[8], adc1_buf[9],
-					//adc1_buf[10], adc1_buf[11], adc1_buf[12], adc1_buf[13], adc1_buf[14]);
-					adc2_buf[0], adc2_buf[1], adc2_buf[2], adc2_buf[3], adc2_buf[4],
-					adc3_buf[0], adc3_buf[1], adc3_buf[2], adc3_buf[3], adc3_buf[4]);
+	//			sprintf((char*)buf, "%c# AI %d %d %d %d A1 %d %d %d %d %d            \r\n",
+	//								ch, //(int)(amp*100), (int)(phase_shift*100),
+	//								//(int)(stiffness*1000), (int)(1000*av_velocity),
+	//								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
+	//								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]);
+	//								//val_SO1, val_BSENSE, val_STRAIN1, val_TEMP, val_SO2, val_CSENSE); //        %d %d %d %d A2 %d %d
 
 
-//			sprintf((char*)buf, "%c# AI %d %d %d %d A1 %d %d %d %d %d            \r\n",
-//								ch, //(int)(amp*100), (int)(phase_shift*100),
-//								//(int)(stiffness*1000), (int)(1000*av_velocity),
-//								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
-//								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]);
-//								//val_SO1, val_BSENSE, val_STRAIN1, val_TEMP, val_SO2, val_CSENSE); //        %d %d %d %d A2 %d %d
+	//			buf[150] = '|';
+	//			buf[100] = '.';
+	//			buf[50] = '|';
+	//			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
 
 
-//			buf[150] = '|';
-//			buf[100] = '.';
-//			buf[50] = '|';
-//			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
+				if (buf_msgs[0] != '\0'){
+					strcat(buf, buf_msgs);
+					buf_msgs[0] = '\0';
+				}
 
 
-			//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
-			huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-			HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 
+				//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
+				huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+				HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+				}
 			ch='q';
 
 			i_slow++;
@@ -678,6 +770,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage 
   */
@@ -685,8 +778,9 @@ void SystemClock_Config(void)
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
   /** Initializes the CPU, AHB and APB busses clocks 
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -707,6 +801,12 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1187,6 +1287,40 @@ static void MX_I2C2_Init(void)
 }
 
 /**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+  /** Initialize RTC Only 
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
+
+}
+
+/**
   * @brief SPI2 Initialization Function
   * @param None
   * @retval None
@@ -1247,7 +1381,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 4096;
+  htim1.Init.Period = 4095;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -1376,6 +1510,102 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 83;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 1000;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 83;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 1000;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
   * @brief TIM8 Initialization Function
   * @param None
   * @retval None
@@ -1396,7 +1626,7 @@ static void MX_TIM8_Init(void)
   htim8.Instance = TIM8;
   htim8.Init.Prescaler = 0;
   htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim8.Init.Period = 2000;
+  htim8.Init.Period = 1999;
   htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim8.Init.RepetitionCounter = 0;
   htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -1750,6 +1980,40 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void set_pwm_off(void){
+	TIM1->CCR1 = 0;
+	TIM1->CCR2 = 0;
+	TIM1->CCR3 = 0;
+}
+
+void step_through_pole_angles(void){
+	normal_operation_enabled = false;
+	set_pwm_off();
+	//run_motor = 0;
+	HAL_Delay(100);
+	uint16_t step_through_amp = 5 * PWM_1PERCENT;
+	for (uint8_t pole = 0; pole < N_POLES ; pole++){
+		for (uint8_t ABC = 0; ABC < N_PHASES ; ABC++){
+			set_pwm_off();
+			if (ABC==0){
+				TIM1->CCR1 = step_through_amp;
+			}
+			else if (ABC==1){
+				TIM1->CCR2 = step_through_amp;
+			}
+			else {
+				TIM1->CCR3 = step_through_amp;
+			}
+			HAL_Delay(200);
+			pole_angles[pole * N_PHASES + ABC]=TIM8->CNT;
+		}
+	}
+	set_pwm_off();
+	normal_operation_enabled = true;
+}
+
+
 void delayMs(int delay){
   int i;
   for(;delay>0; delay--){
@@ -1797,17 +2061,92 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 	//HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 }
 
+void calc_lookup(float *lookup){
+	// TODO plug in a higher order harmonic and see if system gets more energy efficient or more silent
+	for (int i=0; i<210; i++){
+	    lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
+	}
+}
 
+void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma){
+	huart3.Instance->CR3 &= ~USART_CR3_DMAT;
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin;
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+}
+
+//void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+//	if(htim->Instance == TIM3){
+//		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+//	}
+//}
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
+
+		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+
+}
+
+// --- Callback when Encoder fires the I at zero point
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	if (GPIO_Pin == ROT0_I_W_Pin){
-		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-		TIM8->CNT = 0;     //TODO: there is acually some stepping happening under the I pulse so we have to distinguish between step from right and step from left
+		//HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+		uint16_t encoder_belief = TIM8->CNT;
+
+		if (counter0ing_at0crossing){
+			TIM8->CNT = 0;     //TODO: this could lead to an offset of 1 since the CNT value may not be set yet and get incremented thereafter if this interrupt is executed before the CNT increment.
+			counter0ing_at0crossing = false;
+			sprintf((char*)buf_msg, "[EXTI_Callback] EncVal at FIRST ZERO: %d \r\n", encoder_belief);
+			if (strlen(buf_msg) + strlen(buf_msgs) < 100){
+				strcat(buf_msgs, buf_msg);
+			}
+			else {
+				buf_msgs[0] = '#';
+			}
+		}
 		val_SO1_buf_index = 0;
+
+		if (encoder_belief > ENC_TOLERANCE && encoder_belief < ENC_STEPS - ENC_TOLERANCE){
+			sprintf((char*)buf_msg, "[EXTI_Callback] EncVal at ZERO MISMATCH: %d \r\n", encoder_belief);
+			if (strlen(buf_msg) + strlen(buf_msgs) < 100){
+				strcat(buf_msgs, buf_msg);
+			}
+			else {
+				buf_msgs[0] = '#';
+			}
+		}
 	}
 	else{
 		__NOP();
 	}
 }
+
+//void append_msg((char*)msg, uint8_t n){
+//	if (strlen(buf_msg) + strlen(buf_msgs) < 100){
+//		strncat(buf_msgs, buf_msg, n);
+//	}
+//	else {
+//		buf_msgs[0] = '#';
+//	}
+//}
+
+
+//void EncoderStepCallback(TIM_HandleTypeDef *htim){
+//	if(htim->Instance == TIM8){
+//	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//				debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//							debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//							debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//										debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//
+//}}
+
 
 
 
@@ -1829,7 +2168,17 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
 			debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
 
+			last_EncVal = EncVal;
 			EncVal = TIM8->CNT;//takes 200ns
+
+			if (EncVal - last_EncVal > ENC_STEPS_HALF){
+				rotation_counter--;
+			}
+			else if (last_EncVal - EncVal > ENC_STEPS_HALF){
+				rotation_counter++;
+			}
+
+
 
 			// --- phase calc
 
@@ -1890,7 +2239,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 				if (tim12_counter > 2000){ // TODO fix the issue that this gets almost never called when velocity is super low.
 					//TIM12->CNT = 0;
 					TIM2->CNT = 0;
-					int EncDiff = EncVal-last_EncVal;
+					int EncDiff = EncVal-last_EncVal_v;
 					if (EncDiff > 1000){ // if jump is more than a half rotation it's most likely the 0 crossing
 						EncDiff -= 2000;
 					}
@@ -1900,7 +2249,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 					velocity = (float)(EncDiff) / (float)tim12_counter; //[steps/counts]
 					velocity *= 10500; // /2000 steps/round * 21000000 counts/sec --> [round/sec]  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
 					av_velocity = 0.95 * av_velocity + 0.05 * velocity;
-					last_EncVal = EncVal;
+					last_EncVal_v = EncVal;
 				}
 
 
@@ -1981,9 +2330,11 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 				// --- MOTOR DRIVER ----------------------------------------------------
 				// --- PWM pulses 0...2048
-				TIM1->CCR1 = pwmA; //takes<150ns
-				TIM1->CCR2 = pwmB; //takes<150ns
-				TIM1->CCR3 = pwmC; //takes<150ns
+				if (normal_operation_enabled){
+					TIM1->CCR1 = pwmA; //takes<150ns
+					TIM1->CCR2 = pwmB; //takes<150ns
+					TIM1->CCR3 = pwmC; //takes<150ns
+				}
 
 				GPIOC->BSRR = GPIO_PIN_13  << 16U ; // DEBUG
 			}
@@ -1995,24 +2346,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
 }
 
-void calc_lookup(float *lookup){
-	// TODO plug in a higher order harmonic and see if system gets more energy efficient or more silent
-	for (int i=0; i<210; i++){
-	    lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
-	}
-}
 
-void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma){
-	huart3.Instance->CR3 &= ~USART_CR3_DMAT;
-}
-
-void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
-	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin;
-}
-
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
-	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
-}
 
 //void HAL_ADCEx_InjectedConvCpltCallback (ADC_HandleTypeDef *hadc){
 //

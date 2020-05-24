@@ -101,6 +101,8 @@ void Error_Handler(void);
 #define AS_ADDR_SETTINGS1 0x0018
 #define AS_ADDR_SETTINGS2 0x8019
 
+#define USE_HAL_TIM_REGISTER_CALLBACKS 1
+
 #define PI 3.141592
 
 #define min(a,b) \
