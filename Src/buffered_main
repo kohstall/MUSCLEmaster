@@ -48,7 +48,7 @@
 #define ENC_STEPS_HALF 1000 // to be set equal to  ENC_STEPS / 2
 #define ENC_RESOLUTION 16384 // 14 bit resolution for angle reading via SPI
 #define ENC_TOLERANCE 2
-#define N_POLES 20//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+#define N_POLES 7//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define N_PHASES 3
 
 #define PWM_STEPS 4096
@@ -156,14 +156,14 @@ void update_pwm(void);
 
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 // --- MOTOR SPECIFIC PARAMETERS
-float phase0 = 2.5; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+float phase0 = 0.6; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
 // --- SYSTEM SPECIFIC PARAMETERS
 
 int pwm = 2048; // this is half of PWM_STEPS? todo check
 // --- CONTROL PARAMETERS
 
-float amp = 0.01;  // amp //todo check if f needs to be appended
+float amp = 0.05;  // amp //todo check if f needs to be appended
 int run_motor = 1; // todo replace all int with specific int
 int direction = 1;
 float phase_shift = PI/2;
@@ -653,10 +653,10 @@ int main(void)
 					amp /= 2;
 					break;
 				case 'a':
-					phase_shift += 0.2;
+					phase_shift += 0.05;
 					break;
 				case 'd':
-					phase_shift -= 0.2;
+					phase_shift -= 0.05;
 					break;
 				case 't':
 					run_motor = 1;
@@ -756,11 +756,10 @@ int main(void)
 				if (print2uart){
 
 				//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-				sprintf((char*)buf, "%c %d %d %d %d %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
-						ch, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, (uint32_t)(((float)angle)/16384.0*21*1000), (int)(phase_shift*1000),//(int)(amp*100), (int)(phase_shift*100),
+				sprintf((char*)buf, "%c %d %d %d %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
+						ch, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, (uint32_t)angle, //(int)(amp*100), (int)(phase_shift*100),
 						//(int)(stiffness*1000),
-						//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
-						pwmA, pwmB, pwmC,
+						(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
 						(int)(1000*av_velocity),
 						EncVal,
 						val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
@@ -2101,26 +2100,6 @@ void step_through_pole_angles(void){
 			}
 			HAL_Delay(200);
 			pole_angles[pole * N_PHASES + ABC]=TIM8->CNT;
-
-
-
-			uint8_t buf[300];
-			buf[0] = '\0';
-			sprintf((char*)buf_msg, "[step_through_pole_angles] pole: %d ABC: %d angle: %d \r\n", pole, ABC, TIM8->CNT);
-			if (strlen(buf_msg) + strlen(buf_msgs) < 100){
-				strcat(buf_msgs, buf_msg);
-			}
-			else {
-				buf_msgs[0] = '#';
-			}
-			if (buf_msgs[0] != '\0'){
-				strcat(buf, buf_msgs);
-				buf_msgs[0] = '\0';
-			}
-			//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
-			huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-			HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
-
 		}
 	}
 	set_pwm_off();
@@ -2479,9 +2458,8 @@ void update_pwm(void){
 	//dtime_since_last_pwm_update = TIM5->CNT - time_of_last_pwm_update;
 	time_of_last_pwm_update = TIM5->CNT;
 
-	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / 2000.0 * 2*PI * N_POLES ; //takes 1500ns
+	phase = (float) EncVal * 0.02199 ; //(float) EncVal / 2000.0 * 2*PI * 7 ; //takes 1500ns
 	phase -= phase0;
-	//phase = -phase;
 
 	float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
 	float modified_amp = amp + stiffness * av_velocity * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
