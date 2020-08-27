@@ -23,6 +23,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+
+//todo
+// - pressing p seems to pause entire program
+
 #define __FPU_PRESENT             1U
 #define USE_HAL_TIM_REGISTER_CALLBACKS 1
 #include <string.h>
@@ -48,7 +53,7 @@
 #define ENC_STEPS_HALF 1000 // to be set equal to  ENC_STEPS / 2
 #define ENC_RESOLUTION 16384 // 14 bit resolution for angle reading via SPI
 #define ENC_TOLERANCE 2
-#define N_POLES 20//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define N_POLES 20//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define N_PHASES 3
 
 #define PWM_STEPS 4096
@@ -122,7 +127,6 @@ static void MX_RTC_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM5_Init(void);
-
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
 void playSound(uint16_t periode, uint16_t volume, uint16_t cycles);
@@ -156,7 +160,29 @@ void update_pwm(void);
 
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 // --- MOTOR SPECIFIC PARAMETERS
-float phase0 = 2.5; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+//
+
+
+
+//float phase0 = 0;
+//int N_POLES = 7;
+
+
+////--ESC_ID = 0; // test
+//float phase0 = 0.6; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
+//#define  N_POLES 7;//7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+//--ESC_ID = 1; // hip pitch
+float phase0 = 0.0;
+#define  N_POLES 21
+
+////--ESC_ID = 2; // ankle pitch
+//float phase0 = 0.35; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
+//#define  N_POLES 20;//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
 
 // --- SYSTEM SPECIFIC PARAMETERS
 
@@ -169,6 +195,12 @@ int direction = 1;
 float phase_shift = PI/2;
 
 float stiffness = 0;
+
+float pos_amp = 100.0f;
+float pos_freq = 0.5f;
+float pos_amp_limit = 0.2f;
+int32_t pos_offset = 0;
+float P_gain = -0.0005;
 
 // --- INITIALIZE OTHER GLOBALS
 int16_t EncVal;
@@ -220,7 +252,7 @@ uint8_t mode_of_operation = 0; // 0=startup 1=standard
 
 uint8_t mode_of_control = 0; // 0=open 1=position
 
-float P_gain = 0.0005;
+
 
 uint32_t last_tim5_cnt = 0 ;
 
@@ -300,7 +332,7 @@ int main(void)
 
   calc_lookup(lookup);
 
-	uint8_t buf[300];
+	uint8_t buf[400];
 	//uint8_t plot[300];
 
 	char ch='q';
@@ -486,7 +518,7 @@ int main(void)
 	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_value_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
 
-	// --- set steps 2000steps 500 pulses
+	// --- set steps 2000steps 500 pulses //todo this seems not to work as I get 4000 steps
 	spi_address_8[1]= 0x80;
 	spi_address_8[0]= 0x19;
 	//address = AS_ADDR_SETTINGS2 | AS_WRITE ; // 0x8019
@@ -527,7 +559,7 @@ int main(void)
 
 	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
 	//angle &= AS_DATA_MASK;
-	EncVal = (uint16_t) ((float)angle /16384.0 * 2000.0);
+	EncVal = (uint16_t) ((float)angle /16384.0 * ENC_STEPS);
 	last_EncVal = EncVal;
 	last_EncVal_v = EncVal;
 	TIM8->CNT = EncVal;
@@ -592,9 +624,6 @@ int main(void)
   	// -------------------------------------------------------------
 		// --- FAST PROCESS ----------------------------------------------------
 		// -------------------------------------------------------------
-  	//HAL_Delay(1);
-  	//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
-  	//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
 
   	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
   	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
@@ -616,12 +645,10 @@ int main(void)
 //				g_MeasurementNumber++;
 //		}//takes several microseconds
 //
-
-
 //
 //
 //
-//	  HAL_TIM_IC_CaptureCallback(&htim8);// TODO thisis ahack so it get's going eventually when at standstill
+//	  HAL_TIM_IC_CaptureCallback(&htim8);// TODO this is ahack so it get's going eventually when at standstill
 
 //
 //  	TIM1->CCR1 = 0;
@@ -653,10 +680,16 @@ int main(void)
 					amp /= 2;
 					break;
 				case 'a':
-					phase_shift += 0.2;
+					phase_shift += 0.1;
 					break;
 				case 'd':
-					phase_shift -= 0.2;
+					phase_shift -= 0.1;
+					break;
+				case 'q':
+					phase0 += 0.1;
+					break;
+				case 'e':
+					phase0 -= 0.1;
 					break;
 				case 't':
 					run_motor = 1;
@@ -665,7 +698,7 @@ int main(void)
 					run_motor = 0;
 					break;
 				case 'h':
-					direction = 1;
+					direction = 1; //positive should be clockwise == EncVal increases positive :)
 					break;
 				case 'f':
 					direction = -1;
@@ -694,7 +727,7 @@ int main(void)
 					HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, 1);
 					EN_GATE_GPIO_Port->BSRR = EN_GATE_Pin ;
 					break;
-				case 'S':
+				case 'X':
 					step_through_pole_angles();
 					break;
 				case 'P':
@@ -707,11 +740,36 @@ int main(void)
 					mode_of_control = 0;
 					amp = 0.05;
 					break;
-				case 'n':
-					P_gain *= 0.5;
+
+				// pos control
+				case 'W':
+					pos_amp *= 2;
+					break;
+				case 'S':
+					pos_amp *= 0.5;
+					break;
+				case 'D':
+					pos_freq *= 2;
+					break;
+				case 'A':
+					pos_freq *= 0.5;
+					break;
+				case 'R':
+					pos_amp_limit *= 2;
+					break;
+				case 'F':
+					pos_amp_limit *= 0.5;
+				case 'E':
+					pos_offset += 200;
+					break;
+				case 'Q':
+					pos_offset -= 200;
 					break;
 				case 'm':
 					P_gain *= 2;
+					break;
+				case 'n':
+					P_gain *= 0.5;
 					break;
 				default:
 					ch='q';
@@ -756,11 +814,11 @@ int main(void)
 				if (print2uart){
 
 				//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-				sprintf((char*)buf, "%c %d %d %d %d %d %d F %d %d %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
-						ch, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, (uint32_t)(((float)angle)/16384.0*21*1000), (int)(phase_shift*1000),//(int)(amp*100), (int)(phase_shift*100),
+				sprintf((char*)buf, "%c %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
+						ch, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
 						//(int)(stiffness*1000),
 						//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
-						pwmA, pwmB, pwmC,
+						pwmA, //pwmB, pwmC,
 						(int)(1000*av_velocity),
 						EncVal,
 						val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
@@ -796,7 +854,7 @@ int main(void)
 				huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
 				HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 				}
-			ch='q';
+			ch='.';
 
 			i_slow++;
 	  }
@@ -2130,7 +2188,7 @@ void step_through_pole_angles(void){
 	float enc_steps_per_A2B = (float)ENC_STEPS / (float)(N_POLES * N_PHASES);
 	float enc_steps_per_A2A = (float)ENC_STEPS / (float)N_POLES;
 	for (uint8_t i = 0; i < N_POLES * N_PHASES ; i++){
-		float reduced_pole_angle = pole_angles[i] - i * enc_steps_per_A2B ;//should be 95.238=2000/21 = ENC_STEPS/ (N_POLES * N_PHASES)
+		float reduced_pole_angle = pole_angles[i] - i * enc_steps_per_A2B ;//should be 95.238=ENC_STEPS/21 = ENC_STEPS/ (N_POLES * N_PHASES)
 		if (reduced_pole_angle > -ENC_STEPS_HALF){
 			sum += reduced_pole_angle;
 		}
@@ -2259,7 +2317,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 	if (mode_of_control == 1){
 		float t = (float)((TIM5->CNT - last_tim5_cnt) / 100) / 1000.0;
 
-		int32_t desired_EncVal = 3000.0f * sin(6.0f * 1.0f * t);
+		int32_t desired_EncVal = pos_offset + pos_amp * sin(6.28f * pos_freq * t);
 
 		//int32_t desired_EncVal = 0;//TIM5->CNT / 100;
 
@@ -2271,7 +2329,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 //		}
 
 
-
 		int32_t Enc_Val_total = EncVal + rotation_counter * ENC_STEPS;
 		float raw_amp = (float)(Enc_Val_total - desired_EncVal) * P_gain; //oscillates for P_gain > 0.005
 		if (raw_amp < 0.0){
@@ -2281,13 +2338,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 		else{
 			direction = 1;
 		}
-		if (raw_amp > 0.4){
-			raw_amp = 0.4;
+		if (raw_amp > pos_amp_limit){
+			raw_amp = pos_amp_limit;
 		}
 		amp = raw_amp;
 
 		if (buf_msgs[0] == '\0'){
-			sprintf((char*)buf_msg, "[HEARTBEAT] raw_amp: %d %d Enc_Val_total: %d \r\n", (int)((float)(Enc_Val_total - desired_EncVal) * 0.0005*1000), (int)(raw_amp*1000), (int)Enc_Val_total);
+			sprintf((char*)buf_msg, "[HEART] raw_a: %d %d Enc_tot: %d a: %d f: %d lim: %d off: %d g: %d\r\n",
+					(int)((float)(Enc_Val_total - desired_EncVal) * 0.0005*1000),
+					(int)(raw_amp*1000),
+					(int)Enc_Val_total,
+					(int)(pos_amp),
+					(int)(pos_freq*1000),
+					(int)(pos_amp_limit * 1000),
+					(int)(pos_offset),
+					(int)(P_gain*1000000));
 			strcat(buf_msgs, buf_msg);
 		}
 	}
@@ -2443,18 +2508,18 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 				// --- velocity calculation
 				//tim12_counter = TIM12->CNT;
 				tim12_counter = TIM2->CNT;
-				if (tim12_counter > 2000){ // TODO fix the issue that this gets almost never called when velocity is super low.
+				if (tim12_counter > ENC_STEPS){ // TODO fix the issue that this gets almost never called when velocity is super low.
 					//TIM12->CNT = 0;
 					TIM2->CNT = 0;
 					int EncDiff = EncVal-last_EncVal_v;
-					if (EncDiff > 1000){ // if jump is more than a half rotation it's most likely the 0 crossing
-						EncDiff -= 2000;
+					if (EncDiff > ENC_STEPS_HALF){ // if jump is more than a half rotation it's most likely the 0 crossing
+						EncDiff -= ENC_STEPS;
 					}
 					else if (EncDiff < -1000){
-						EncDiff += 2000;
+						EncDiff += ENC_STEPS;
 					}
 					velocity = (float)(EncDiff) / (float)tim12_counter; //[steps/counts]
-					velocity *= 10500; // /2000 steps/round * 21000000 counts/sec --> [round/sec]  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
+					velocity *= 21000000/ENC_STEPS; // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
 					av_velocity = 0.95 * av_velocity + 0.05 * velocity;
 					last_EncVal_v = EncVal;
 				}
@@ -2479,7 +2544,7 @@ void update_pwm(void){
 	//dtime_since_last_pwm_update = TIM5->CNT - time_of_last_pwm_update;
 	time_of_last_pwm_update = TIM5->CNT;
 
-	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / 2000.0 * 2*PI * N_POLES ; //takes 1500ns
+	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
 	phase -= phase0;
 	//phase = -phase;
 
