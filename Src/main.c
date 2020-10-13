@@ -102,6 +102,17 @@ static const uint8_t IMU_ADDR = 0x68 << 1;
 static const uint8_t REG_ACCEL_H = 0x3B;
 static const uint8_t REG_ACCEL_L = 0x3C;
 static const uint8_t REG_POWER = 0x6B;
+
+
+CAN_HandleTypeDef hcan1;
+CAN_TxHeaderTypeDef pHeader;
+CAN_RxHeaderTypeDef pRxHeader;
+uint32_t TxMailbox;
+uint8_t a[6];
+uint8_t r[4];//=0;
+//unsigned int r : 32;
+CAN_FilterTypeDef sFilterConfig;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -172,16 +183,26 @@ void update_pwm(void);
 ////--ESC_ID = 0; // test
 //float phase0 = 0.6; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
-//#define  N_POLES 7;//7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define  N_POLES 7 //7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x11
 
 //--ESC_ID = 1; // hip pitch
-float phase0 = 0.0;
-#define  N_POLES 21
+//float phase0 = 0.0;
+//#define  N_POLES 21
+//#define CAN_ID 0x10
+
+
+//--ESC_ID = 3; // test on Hangli motor
+//float phase0 = 3.33+0.17;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
+//// I had to + the phase0 so i take plus here
+//#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x12
 
 ////--ESC_ID = 2; // ankle pitch
-//float phase0 = 0.35; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-//// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
-//#define  N_POLES 20;//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+float phase0 = 0.4; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
+#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+#define CAN_ID 0x13
 
 
 // --- SYSTEM SPECIFIC PARAMETERS
@@ -192,7 +213,7 @@ int pwm = 2048; // this is half of PWM_STEPS? todo check
 float amp = 0.01;  // amp //todo check if f needs to be appended
 int run_motor = 1; // todo replace all int with specific int
 int direction = 1;
-float phase_shift = PI/2;
+float phase_shift = PI/2 - 0.35; //todo 0.35 is an empirical correction
 
 float stiffness = 0;
 
@@ -247,6 +268,8 @@ float av_start_angle;
 
 bool normal_operation_enabled = true;
 
+uint8_t wave_mode = 0;
+
 uint8_t mode_of_operation = 0; // 0=startup 1=standard
 //enum mode_of_operation{ STARTUP, STANDARD};
 
@@ -279,6 +302,7 @@ int main(void)
 	// --- STARTING SERIAL OUTPUT IN TERMINAL
 	//ls /dev/tty*
 	//screen /dev/tty.usbmodem14203 115200          --- stop: control a \
+	//screen /dev/tty.usbmodem14103 115200          --- stop: control a \
 
 	//Drivers/CMSIS/DSP/Include
 	//ARM_MATH_CM4
@@ -335,7 +359,7 @@ int main(void)
 	uint8_t buf[400];
 	//uint8_t plot[300];
 
-	char ch='q';
+	char ch='.';
 	HAL_StatusTypeDef ret;
 
 	int16_t accel16;
@@ -504,11 +528,43 @@ int main(void)
 	uint8_t spi_address_8[2];
 	uint8_t spi_value_8[2];
 
+	//todo UGLY BUG - Ugly FIX: now i just send the init below twice because somehow the communication of the first transaction does not seem to work-- i sse on the MISO signal the lines just pulls up to 0.5V instead of 3V but it works fine for the next transmission so it gets initialized correctly if i sent it twice
+
 	// --- set ABI and enable PWM
-	spi_address_8[1]= 0x00;
-	spi_address_8[0]= 0x18;
+	spi_address_8[1]= 0x00;//
+	spi_address_8[0]= 0x18;//00000000 00011000
 	spi_value_8[1]= 0x80;
-	spi_value_8[0]= 0x80;
+	spi_value_8[0]= 0x80;  //10000000 10000000
+	delay_SPI();
+	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
+	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+	delay_SPI();
+	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_value_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
+	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+
+	// --- set ABI and enable PWM
+		spi_address_8[1]= 0x00;//
+		spi_address_8[0]= 0x18;//00000000 00011000
+		spi_value_8[1]= 0x80;
+		spi_value_8[0]= 0x80;  //10000000 10000000
+		delay_SPI();
+		HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+		HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
+		HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+		delay_SPI();
+		HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+		HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_value_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
+		HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+
+
+
+	// --- set ABI and enable PWM
+	spi_address_8[1]= 0x00;//
+	spi_address_8[0]= 0x18;//00000000 00011000
+	spi_value_8[1]= 0x80;
+	spi_value_8[0]= 0x80;  //10000000 10000000
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
@@ -520,12 +576,12 @@ int main(void)
 
 	// --- set steps 2000steps 500 pulses //todo this seems not to work as I get 4000 steps
 	spi_address_8[1]= 0x80;
-	spi_address_8[0]= 0x19;
+	spi_address_8[0]= 0x19; //00001000 00011001
 	//address = AS_ADDR_SETTINGS2 | AS_WRITE ; // 0x8019
 	//value = 0x0020 | AS_ODD; // 0x8020
 	//value = 0x00E0 | AS_ODD;
 	spi_value_8[1]= 0x80;
-	spi_value_8[0]= 0x20;
+	spi_value_8[0]= 0x20;  // 10000000 00100000
 	delay_SPI();
 	HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
@@ -609,6 +665,24 @@ int main(void)
 
 	mode_of_operation = 1;
 
+
+	pHeader.DLC =6;
+	pHeader.IDE = CAN_ID_STD;
+	pHeader.RTR = CAN_RTR_DATA;
+	pHeader.StdId = 0x001;
+
+	sFilterConfig.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+	sFilterConfig.FilterIdHigh = CAN_ID<<5;
+	sFilterConfig.FilterIdLow = 0;
+	sFilterConfig.FilterMaskIdHigh = 0xFFFF;
+	sFilterConfig.FilterMaskIdLow = 0xFFFF;
+	sFilterConfig.FilterScale = CAN_FILTERSCALE_16BIT;
+	sFilterConfig.FilterActivation = ENABLE;
+
+	HAL_CAN_ConfigFilter(&hcan1, &sFilterConfig);
+	HAL_CAN_Start(&hcan1);
+	HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -662,6 +736,8 @@ int main(void)
 	  // -------------------------------------------------------------
 
 	  if (i_fast%fast2slow == 0){
+	  	//a++;
+	  	//HAL_CAN_AddTxMessage(&hcan1, &pHeader, &a, &TxMailbox);
 
 	  	// --- GPIO ----------------------------------------------------
 	  	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
@@ -680,16 +756,16 @@ int main(void)
 					amp /= 2;
 					break;
 				case 'a':
-					phase_shift += 0.1;
+					phase_shift -= 0.05;
 					break;
 				case 'd':
-					phase_shift -= 0.1;
+					phase_shift += 0.05;
 					break;
 				case 'q':
-					phase0 += 0.1;
+					phase0 -= 0.05;
 					break;
 				case 'e':
-					phase0 -= 0.1;
+					phase0 += 0.05;
 					break;
 				case 't':
 					run_motor = 1;
@@ -771,12 +847,23 @@ int main(void)
 				case 'n':
 					P_gain *= 0.5;
 					break;
+
+				case 'T':
+					wave_mode = 0;
+					break;
+				case 'G':
+					wave_mode = 1;
+					break;
+				case 'B':
+					wave_mode = 2;
+					break;
+
 				default:
-					ch='q';
+					ch='.';
 			}
 
 			//HAL_ADCEx_InjectedStart (&hadc1);
-			//HAL_ADCEx_InjectedPollForConversion (&hadc1, 1);
+			HAL_ADCEx_InjectedPollForConversion (&hadc1, 1);
 
 			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
 			uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
@@ -813,46 +900,71 @@ int main(void)
 
 				if (print2uart){
 
-				//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-				sprintf((char*)buf, "%c %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
-						ch, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
-						//(int)(stiffness*1000),
-						//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
-						pwmA, //pwmB, pwmC,
-						(int)(1000*av_velocity),
-						EncVal,
-						val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
-						val_SO1, val_BSENSE, val_STRAIN1, val_TEMP,
-						val_SO2, val_CSENSE);
-						//adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4],
-						//adc2_buf[0], adc2_buf[1], adc2_buf[2], adc2_buf[3], adc2_buf[4],
-						//adc3_buf[0], adc3_buf[1], adc3_buf[2], adc3_buf[3], adc3_buf[4]);   //A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d
+						//decode RX can message
+						uint16_t rc = (uint16_t)r[1] << 3 | r[2] >> 5;
+						uint16_t rc2 = (uint16_t)(r[2] & ((1<<5)-1)) << 6 | r[3] >> 2;
+						uint8_t mode1 = (r[3] >> 1) & 1;
+						uint8_t mode2 = (r[3] ) & 1;
+
+						//encode TX can message
+						uint8_t v8= 100;
+						uint16_t v16 = 10000;
+						uint16_t v12 = 1000;
+						uint8_t v1_0 = 1;
+						uint8_t v1_1 = 0;
+						uint8_t v1_2 = 1;
+
+						a[0] = v8;
+						a[1] = (uint8_t)(v16 >> 8);
+						a[2] = (uint8_t)v16;
+						a[3] = (uint8_t)(v12 >> 4);
+						a[4] = (uint8_t)(v12 << 4);
+						a[4] = a[4] | (v1_0 << 3) ;
+						a[4] = a[4] | (v1_1 << 2) ;
+						a[4] = a[4] | (v1_2 << 1) ;
+
+						//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
+						sprintf((char*)buf, "%c a: %d r: %d %d %d %d / %d %d %d %d _ %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
+								ch, a[0], a[1], a[2], a[3], a[4], rc, rc2, mode1, mode2, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
+								//(int)(stiffness*1000),
+								//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
+								pwmA, //pwmB, pwmC,
+								(int)(1000*av_velocity),
+								EncVal,
+								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
+								val_SO1,
+								//val_BSENSE, val_STRAIN1, val_TEMP,
+								//val_SO2, val_CSENSE),
+								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]
+								);
+								//adc2_buf[0], adc2_buf[1], adc2_buf[2], adc2_buf[3], adc2_buf[4],
+								//adc3_buf[0], adc3_buf[1], adc3_buf[2], adc3_buf[3], adc3_buf[4]);   //A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d
 
 
-	//			sprintf((char*)buf, "%c# AI %d %d %d %d A1 %d %d %d %d %d            \r\n",
-	//								ch, //(int)(amp*100), (int)(phase_shift*100),
-	//								//(int)(stiffness*1000), (int)(1000*av_velocity),
-	//								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
-	//								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]);
-	//								//val_SO1, val_BSENSE, val_STRAIN1, val_TEMP, val_SO2, val_CSENSE); //        %d %d %d %d A2 %d %d
+			//			sprintf((char*)buf, "%c# AI %d %d %d %d A1 %d %d %d %d %d            \r\n",
+			//								ch, //(int)(amp*100), (int)(phase_shift*100),
+			//								//(int)(stiffness*1000), (int)(1000*av_velocity),
+			//								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
+			//								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]);
+			//								//val_SO1, val_BSENSE, val_STRAIN1, val_TEMP, val_SO2, val_CSENSE); //        %d %d %d %d A2 %d %d
 
 
-	//			buf[150] = '|';
-	//			buf[100] = '.';
-	//			buf[50] = '|';
-	//			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
+			//			buf[150] = '|';
+			//			buf[100] = '.';
+			//			buf[50] = '|';
+			//			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
 
 
-				if (buf_msgs[0] != '\0'){
-					strcat(buf, buf_msgs);
-					buf_msgs[0] = '\0';
-				}
+						if (buf_msgs[0] != '\0'){
+							strcat(buf, buf_msgs);
+							buf_msgs[0] = '\0';
+						}
 
 
 
-				//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
-				huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-				HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+						//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
+						huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+						HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 				}
 			ch='.';
 
@@ -1304,11 +1416,11 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 16;
+  hcan1.Init.Prescaler = 3;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_1TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = DISABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
@@ -2576,46 +2688,148 @@ void update_pwm(void){
 	float uB = 0;
 	float uC = 0;
 
+	if (wave_mode < 2 ){
+		if (wave_mode == 0 ){
+		//
+		//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+		//    			uB = lookup[2]; // takes 3mus
+		//    			uC = 0;
 
+			// ---- lookup  this optimized routine brings roundtrip down to 5mus
+
+			if  (int_phase < 210)	{ //0...209
+				uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+				uB = lookup[210 - 1 - int_phase]; // takes 3mus
+				uC = 0;
+			}
+		 else if  (int_phase < 420){	 //210...419
+				uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+				uB = lookup[int_phase - 210]; // takes 3mus
+				uC = lookup[420 - 1 - int_phase];
+		 }
+		 else	{  //420...629
+				uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
+				uB = 0; // takes 3mus
+				uC = lookup[int_phase - 420];
+			}
+		}
+
+		else if (wave_mode == 1){
+			if  (int_phase < 105-52)	{
+				uA = 1;
+				uB = 0;
+				uC = 0;
+			}
+			else if  (int_phase < 210-52)	{
+				uA = 1;
+				uB = 1;
+				uC = 0;
+			}
+			else if  (int_phase < 315-52)	{
+				uA = 0;
+				uB = 1;
+				uC = 0;
+			}
+			else if  (int_phase < 420-52)	{
+				uA = 0;
+				uB = 1;
+				uC = 1;
+			}
+			else if  (int_phase < 525-52)	{
+				uA = 0;
+				uB = 0;
+				uC = 1;
+			}
+			else if  (int_phase < 630-52)	{
+				uA = 1;
+				uB = 0;
+				uC = 1;
+			}
+			else 	{ //same as first half phase
+				uA = 1;
+				uB = 0;
+				uC = 0;
+			}
+		}
+		pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+		pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
+		pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
+
+		// ---- end lookup
+
+		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+
+		// --- MOTOR DRIVER ----------------------------------------------------
+		// --- PWM pulses 0...2048
+		if (normal_operation_enabled){
+			TIM1->CCR1 = pwmA; //takes<150ns
+			TIM1->CCR2 = pwmB; //takes<150ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+		}
+	}
+
+	else{
+		if  (int_phase < 105)	{
+			uA = 1;
+			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			TIM1->CCR1 = pwmA; //takes<150ns
+//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
+//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
 //
-//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-//    			uB = lookup[2]; // takes 3mus
-//    			uC = 0;
+//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC2CE);
+//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC2CE);
+//			SET_BIT(TIM1->CCMR2, TIM_CCMR2_OC3CE);
+//			CLEAR_BIT(TIM1->CCMR2, TIM_CCMR2_OC3CE);
 
-	// ---- lookup  this optimized routine brings roundtrip down to 5mus
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+		else if  (int_phase < 210)	{
+			uB = 1;
+			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
+			TIM1->CCR2 = pwmB; //takes<150ns
 
-	if  (int_phase < 210)	{ //0...209
-		uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-		uB = lookup[210 - 1 - int_phase]; // takes 3mus
-		uC = 0;
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+		else if  (int_phase < 315)	{
+			uB = 1;
+			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
+			TIM1->CCR2 = pwmB; //takes<150ns
+
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+		else if  (int_phase < 420)	{
+			uC = 1;
+			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+		}
+		else if  (int_phase < 525)	{
+			uC = 1;
+			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+		}
+		else 	{
+			uA = 1;
+			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			TIM1->CCR1 = pwmA; //takes<150ns
+
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+
+
 	}
- else if  (int_phase < 420){	 //210...419
-		uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-		uB = lookup[int_phase - 210]; // takes 3mus
-		uC = lookup[420 - 1 - int_phase];
- }
- else	{  //420...629
-		uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-		uB = 0; // takes 3mus
-		uC = lookup[int_phase - 420];
-	}
 
 
-	pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
-	pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
-	pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
 
-	// ---- end lookup
-
-	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-	// --- MOTOR DRIVER ----------------------------------------------------
-	// --- PWM pulses 0...2048
-	if (normal_operation_enabled){
-		TIM1->CCR1 = pwmA; //takes<150ns
-		TIM1->CCR2 = pwmB; //takes<150ns
-		TIM1->CCR3 = pwmC; //takes<150ns
-	}
 
 }
 
