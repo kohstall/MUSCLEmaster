@@ -58,6 +58,7 @@
 
 #define PWM_STEPS 4096
 #define PWM_1PERCENT 41 // set this to 1% of the PWM_STEP
+#define AMP_LIMIT 0.4
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -108,8 +109,22 @@ CAN_HandleTypeDef hcan1;
 CAN_TxHeaderTypeDef pHeader;
 CAN_RxHeaderTypeDef pRxHeader;
 uint32_t TxMailbox;
-uint8_t a[6];
-uint8_t r[4];//=0;
+uint8_t tx_msg[6] = {111,111,111,111,111,111};
+//tx_msg[0] = (uint8_t)111;
+//tx_msg[1] = (uint8_t)111;
+//tx_msg[2] = (uint8_t)111;
+//tx_msg[3] = (uint8_t)111;
+//tx_msg[4] = (uint8_t)111;
+//tx_msg[5] = (uint8_t)111;
+uint8_t rx_msg[4];//=0;
+//uint8_t rx_character_armed = 0;
+char rx_character_buffered = '.';
+char rx_character = '.';
+uint8_t rx_control_0 = 0 ;
+uint16_t rx_control_1 = 0;
+uint8_t rx_mode_0 = 0;
+uint8_t rx_mode_1 = 0;
+uint8_t rx_intent = 0;
 //unsigned int r : 32;
 CAN_FilterTypeDef sFilterConfig;
 
@@ -203,6 +218,13 @@ float phase0 = 0.4; // angle motor winding A to encoder 0 [radians of electrical
 // 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
 #define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define CAN_ID 0x13
+
+//Big todo
+// - reliable programming and rieadout of angle sensor
+// - booting up from switch on without reset
+// - reliable play button when writing code
+// - analog channels work on one board only
+
 
 
 // --- SYSTEM SPECIFIC PARAMETERS
@@ -747,6 +769,13 @@ int main(void)
 
 			HAL_UART_Receive_IT(&huart3, (uint8_t *)&ch, 1);
 
+			if (rx_character_buffered != '.'){
+				ch = rx_character_buffered;
+				//rx_character_armed = 0;
+				rx_character_buffered = '.';
+			}
+
+
 
 			switch(ch){
 				case 'w':
@@ -900,32 +929,11 @@ int main(void)
 
 				if (print2uart){
 
-						//decode RX can message
-						uint16_t rc = (uint16_t)r[1] << 3 | r[2] >> 5;
-						uint16_t rc2 = (uint16_t)(r[2] & ((1<<5)-1)) << 6 | r[3] >> 2;
-						uint8_t mode1 = (r[3] >> 1) & 1;
-						uint8_t mode2 = (r[3] ) & 1;
 
-						//encode TX can message
-						uint8_t v8= 100;
-						uint16_t v16 = 10000;
-						uint16_t v12 = 1000;
-						uint8_t v1_0 = 1;
-						uint8_t v1_1 = 0;
-						uint8_t v1_2 = 1;
-
-						a[0] = v8;
-						a[1] = (uint8_t)(v16 >> 8);
-						a[2] = (uint8_t)v16;
-						a[3] = (uint8_t)(v12 >> 4);
-						a[4] = (uint8_t)(v12 << 4);
-						a[4] = a[4] | (v1_0 << 3) ;
-						a[4] = a[4] | (v1_1 << 2) ;
-						a[4] = a[4] | (v1_2 << 1) ;
 
 						//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-						sprintf((char*)buf, "%c a: %d r: %d %d %d %d / %d %d %d %d _ %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
-								ch, a[0], a[1], a[2], a[3], a[4], rc, rc2, mode1, mode2, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
+						sprintf((char*)buf, "%c %d %d %d %d  %d c: %c r: %d %d %d %d %d  _ %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
+								ch, tx_msg[0], rx_msg[1],rx_msg[2],rx_msg[3],rx_character,rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
 								//(int)(stiffness*1000),
 								//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
 								pwmA, //pwmB, pwmC,
@@ -979,6 +987,78 @@ int main(void)
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
+}
+
+
+/**
+  * @brief This function handles CAN1 RX0 interrupts.
+  */
+void CAN1_RX0_IRQHandler(void)
+{
+  /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
+
+  /* USER CODE END CAN1_RX0_IRQn 0 */
+  HAL_CAN_IRQHandler(&hcan1);
+  /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
+  HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &pRxHeader, &rx_msg);
+//
+//
+//  //decode RX can message
+//  rx_character = (rx_msg[0]) ;
+//  rx_control_0 = (rx_msg[1]) ;
+//	rx_control_1 = (uint16_t)rx_msg[2] << 4 | rx_msg[3] >> 4;
+//	rx_mode_0 = (rx_msg[3] >> 3) & 1;
+//	rx_mode_1 = (rx_msg[3] >> 2) & 1;
+//	rx_intent = (rx_msg[3]) & 3;
+//	//uint16_t rc2 = (uint16_t)(rx_msg[2] & ((1<<5)-1)) << 6 | rx_msg[3] >> 2;
+//	if (rx_character != '.'){
+//		rx_character_buffered = rx_character;
+//		//rx_character_armed = 1;
+//	}
+//	if (rx_mode_0 == 0){
+//		if (rx_control_1 > 2048){
+//			amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
+//			direction = 1;
+//		}
+//		else {
+//			amp = (-((float)rx_control_1)+2048) / 2048.0 / 2.5;
+//			direction = -1;
+//		}
+//	}
+//
+//	//encode TX can message
+//		uint8_t v8= 100;
+//		uint16_t tx_pos = (int)((rotation_counter * ENC_STEPS + EncVal) / 16 + 2048);
+//		uint16_t tx_av_velocity = (int) av_velocity*10 + 2048;
+//
+//		tx_msg[0] = v8; //current
+//		tx_msg[1] = v8; //Tmotor
+//		tx_msg[2] = v8; //Tboard
+//		tx_msg[3] = (uint8_t)(tx_pos >> 4);
+//		tx_msg[4] = (uint8_t)(tx_pos << 4);
+//		tx_msg[4] = tx_msg[4] | (uint8_t)(tx_av_velocity >> 8);
+//		tx_msg[5] = (uint8_t)(tx_av_velocity);
+//
+//
+//	//	tx_msg[1] = (uint8_t)(v16 >> 8);
+//	//	tx_msg[2] = (uint8_t)v16;
+//	//	tx_msg[3] = (uint8_t)(v12 >> 4);
+//	//	tx_msg[4] = (uint8_t)(v12 << 4);
+//	//	tx_msg[4] = tx_msg[4] | (v1_0 << 3) ;
+//	//	tx_msg[4] = tx_msg[4] | (v1_1 << 2) ;
+//	//	tx_msg[4] = tx_msg[4] | (v1_2 << 1) ;
+//
+
+
+  HAL_CAN_AddTxMessage(&hcan1, &pHeader, &tx_msg, &TxMailbox);
+
+
+
+
+
+
+
+  /* USER CODE END CAN1_RX0_IRQn 1 */
 }
 
 /**
@@ -2417,7 +2497,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 // --- 1ms heartbeat of the microcontroller
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 
-
+	// shift tx here to offload the can interrupt
 
 	if (TIM5->CNT - time_of_last_pwm_update  > 95){ //100 time time_step = heartbeat
 		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
@@ -2663,6 +2743,12 @@ void update_pwm(void){
 	float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
 	float modified_amp = amp + stiffness * av_velocity * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
 	//u0 *= amp;  //takes<200ns
+	if (modified_amp > AMP_LIMIT){
+		modified_amp = AMP_LIMIT;
+	}
+//	else if (modified_amp < -AMP_LIMIT){
+//		modified_amp = -AMP_LIMIT;
+//	}
 	u0 *= modified_amp;  //takes<200ns
 	u0 *= run_motor;  //takes<200ns
 

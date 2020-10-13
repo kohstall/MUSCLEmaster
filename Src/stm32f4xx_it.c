@@ -79,8 +79,8 @@ extern UART_HandleTypeDef huart3;
 extern CAN_RxHeaderTypeDef pRxHeader;
 extern CAN_TxHeaderTypeDef pHeader;
 extern uint32_t TxMailbox;
-extern uint8_t r[4];
-extern uint8_t a[6];
+extern uint8_t rx_msg[4];
+extern uint8_t tx_msg[6];
 
 
 /* USER CODE END EV */
@@ -251,24 +251,7 @@ void ADC_IRQHandler(void)
   /* USER CODE END ADC_IRQn 1 */
 }
 
-/**
-  * @brief This function handles CAN1 RX0 interrupts.
-  */
-void CAN1_RX0_IRQHandler(void)
-{
-  /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
 
-  /* USER CODE END CAN1_RX0_IRQn 0 */
-  HAL_CAN_IRQHandler(&hcan1);
-  /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
-  HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &pRxHeader, &r);
-
-  //a++;
-  HAL_CAN_AddTxMessage(&hcan1, &pHeader, &a, &TxMailbox);
-
-
-  /* USER CODE END CAN1_RX0_IRQn 1 */
-}
 
 /**
   * @brief This function handles EXTI line[9:5] interrupts.
