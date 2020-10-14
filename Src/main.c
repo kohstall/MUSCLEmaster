@@ -109,7 +109,7 @@ CAN_HandleTypeDef hcan1;
 CAN_TxHeaderTypeDef pHeader;
 CAN_RxHeaderTypeDef pRxHeader;
 uint32_t TxMailbox;
-uint8_t tx_msg[6] = {111,111,111,111,111,111};
+uint8_t tx_msg[6];
 //tx_msg[0] = (uint8_t)111;
 //tx_msg[1] = (uint8_t)111;
 //tx_msg[2] = (uint8_t)111;
@@ -127,6 +127,10 @@ uint8_t rx_mode_1 = 0;
 uint8_t rx_intent = 0;
 //unsigned int r : 32;
 CAN_FilterTypeDef sFilterConfig;
+
+uint32_t can_pending_before = 22;
+uint32_t can_pending_after = 22;
+
 
 /* USER CODE END PV */
 
@@ -187,37 +191,37 @@ void update_pwm(void);
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 // --- MOTOR SPECIFIC PARAMETERS
 
-//
 
 
 
-//float phase0 = 0;
-//int N_POLES = 7;
+
+
 
 
 ////--ESC_ID = 0; // test
-//float phase0 = 0.6; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-//// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
-//#define  N_POLES 7 //7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-//#define CAN_ID 0x11
+//float phase0 = 0.6;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define  N_POLES 20 // 7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x10
 
 //--ESC_ID = 1; // hip pitch
 //float phase0 = 0.0;
-//#define  N_POLES 21
-//#define CAN_ID 0x10
+//#define  N_POLES 21 //black motor
+//#define CAN_ID 0x11
 
-
-//--ESC_ID = 3; // test on Hangli motor
-//float phase0 = 3.33+0.17;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
-//// I had to + the phase0 so i take plus here
-//#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-//#define CAN_ID 0x12
-
-////--ESC_ID = 2; // ankle pitch
-float phase0 = 0.4; // angle motor winding A to encoder 0 [radians of electrical phase]  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-// 0.4 gives strongest force and gives symmetric run for both directions. 0.6 pulls less current at higher rpm though...makes it a question of phase shift...phase shift of 1.1 instead of 1.5 does the job of bringing the current down for both directions :)
+//--ESC_ID = 2; // knee
+float phase0 = 3.9;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
 #define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-#define CAN_ID 0x13
+#define CAN_ID 0x12
+
+//--ESC_ID = 3; // ankle pitch
+//float phase0 = 0.4;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x13
+
+
+
+
+
 
 //Big todo
 // - reliable programming and rieadout of angle sensor
@@ -931,9 +935,11 @@ int main(void)
 
 
 
+
+
 						//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
 						sprintf((char*)buf, "%c %d %d %d %d  %d c: %c r: %d %d %d %d %d  _ %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
-								ch, tx_msg[0], rx_msg[1],rx_msg[2],rx_msg[3],rx_character,rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
+								ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3],rx_character,rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
 								//(int)(stiffness*1000),
 								//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
 								pwmA, //pwmB, pwmC,
@@ -990,6 +996,9 @@ int main(void)
 }
 
 
+
+
+
 /**
   * @brief This function handles CAN1 RX0 interrupts.
   */
@@ -1001,56 +1010,67 @@ void CAN1_RX0_IRQHandler(void)
   HAL_CAN_IRQHandler(&hcan1);
   /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
   HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &pRxHeader, &rx_msg);
-//
-//
-//  //decode RX can message
-//  rx_character = (rx_msg[0]) ;
-//  rx_control_0 = (rx_msg[1]) ;
-//	rx_control_1 = (uint16_t)rx_msg[2] << 4 | rx_msg[3] >> 4;
-//	rx_mode_0 = (rx_msg[3] >> 3) & 1;
-//	rx_mode_1 = (rx_msg[3] >> 2) & 1;
-//	rx_intent = (rx_msg[3]) & 3;
-//	//uint16_t rc2 = (uint16_t)(rx_msg[2] & ((1<<5)-1)) << 6 | rx_msg[3] >> 2;
-//	if (rx_character != '.'){
-//		rx_character_buffered = rx_character;
-//		//rx_character_armed = 1;
-//	}
-//	if (rx_mode_0 == 0){
-//		if (rx_control_1 > 2048){
-//			amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
-//			direction = 1;
-//		}
-//		else {
-//			amp = (-((float)rx_control_1)+2048) / 2048.0 / 2.5;
-//			direction = -1;
-//		}
-//	}
-//
-//	//encode TX can message
-//		uint8_t v8= 100;
-//		uint16_t tx_pos = (int)((rotation_counter * ENC_STEPS + EncVal) / 16 + 2048);
-//		uint16_t tx_av_velocity = (int) av_velocity*10 + 2048;
-//
-//		tx_msg[0] = v8; //current
-//		tx_msg[1] = v8; //Tmotor
-//		tx_msg[2] = v8; //Tboard
-//		tx_msg[3] = (uint8_t)(tx_pos >> 4);
-//		tx_msg[4] = (uint8_t)(tx_pos << 4);
-//		tx_msg[4] = tx_msg[4] | (uint8_t)(tx_av_velocity >> 8);
-//		tx_msg[5] = (uint8_t)(tx_av_velocity);
-//
-//
-//	//	tx_msg[1] = (uint8_t)(v16 >> 8);
-//	//	tx_msg[2] = (uint8_t)v16;
-//	//	tx_msg[3] = (uint8_t)(v12 >> 4);
-//	//	tx_msg[4] = (uint8_t)(v12 << 4);
-//	//	tx_msg[4] = tx_msg[4] | (v1_0 << 3) ;
-//	//	tx_msg[4] = tx_msg[4] | (v1_1 << 2) ;
-//	//	tx_msg[4] = tx_msg[4] | (v1_2 << 1) ;
-//
 
 
-  HAL_CAN_AddTxMessage(&hcan1, &pHeader, &tx_msg, &TxMailbox);
+  //decode RX can message
+  rx_character = (rx_msg[0]) ;
+  rx_control_0 = (rx_msg[1]) ;
+	rx_control_1 = (uint16_t)rx_msg[2] << 4 | rx_msg[3] >> 4;
+	rx_mode_0 = (rx_msg[3] >> 3) & 1;
+	rx_mode_1 = (rx_msg[3] >> 2) & 1;
+	rx_intent = (rx_msg[3]) & 3;
+	//uint16_t rc2 = (uint16_t)(rx_msg[2] & ((1<<5)-1)) << 6 | rx_msg[3] >> 2;
+	if (rx_character != '.'){
+		rx_character_buffered = rx_character;
+		//rx_character_armed = 1;
+	}
+	if (rx_mode_0 == 0){
+		if (rx_control_1 > 2048){
+			amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
+			direction = 1;
+		}
+		else {
+			amp = (-((float)rx_control_1)+2048) / 2048.0 / 2.5;
+			direction = -1;
+		}
+	}
+
+	//encode TX can message
+		uint8_t v8= 100;
+		uint16_t tx_pos = (uint16_t)((rotation_counter * ENC_STEPS + EncVal) / 16 + 2048);
+		uint16_t tx_av_velocity = (uint16_t) (av_velocity*10 + 2048);
+
+		tx_msg[0] = v8; //current
+		tx_msg[1] = v8; //Tmotor
+		tx_msg[2] = v8; //Tboard
+		tx_msg[3] = (uint8_t)(tx_pos >> 4);
+		tx_msg[4] = (uint8_t)(tx_pos << 4);
+		tx_msg[4] = tx_msg[4] | (uint8_t)(tx_av_velocity >> 8);
+		tx_msg[5] = (uint8_t)(tx_av_velocity);
+
+
+	//	tx_msg[1] = (uint8_t)(v16 >> 8);
+	//	tx_msg[2] = (uint8_t)v16;
+	//	tx_msg[3] = (uint8_t)(v12 >> 4);
+	//	tx_msg[4] = (uint8_t)(v12 << 4);
+	//	tx_msg[4] = tx_msg[4] | (v1_0 << 3) ;
+	//	tx_msg[4] = tx_msg[4] | (v1_1 << 2) ;
+	//	tx_msg[4] = tx_msg[4] | (v1_2 << 1) ;
+
+
+		//can_pending_before = HAL_CAN_IsTxMessagePending(&hcan1, &TxMailbox);
+
+		//HAL_CAN_AbortTxRequest(&hcan1, &TxMailbox);
+
+
+
+		//if (can_pending_before == 0){
+		HAL_CAN_AddTxMessage(&hcan1, &pHeader, &tx_msg, &TxMailbox);//somehow there is  a 4 second delay todo
+		//}
+
+		//can_pending_after = HAL_CAN_IsTxMessagePending(&hcan1, &TxMailbox);
+
+
 
 
 
@@ -1060,6 +1080,10 @@ void CAN1_RX0_IRQHandler(void)
 
   /* USER CODE END CAN1_RX0_IRQn 1 */
 }
+
+
+
+
 
 /**
   * @brief System Clock Configuration
