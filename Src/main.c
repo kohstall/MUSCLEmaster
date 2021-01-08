@@ -58,7 +58,8 @@
 
 #define PWM_STEPS 4096
 #define PWM_1PERCENT 41 // set this to 1% of the PWM_STEP
-#define AMP_LIMIT 0.4
+#define AMP_LIMIT 0.9
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -177,6 +178,7 @@ void EncoderStepCallback(void);
 
 void step_through_pole_angles(void);
 void step_through_pwm_percent(void);
+void explore_limits(void);
 void set_pwm_off(void);
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
@@ -209,14 +211,19 @@ void update_pwm(void);
 //#define CAN_ID 0x11
 
 //--ESC_ID = 2; // knee
-float phase0 = 3.9;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
-#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-#define CAN_ID 0x12
+//float phase0 = 3.9;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
+//#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x12
 
 //--ESC_ID = 3; // ankle pitch
 //float phase0 = 0.4;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x13
+
+//--ESC_ID = 100; // ankle pitch
+float phase0 = 1.2;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+#define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+#define CAN_ID 0x100
 
 
 
@@ -233,13 +240,15 @@ float phase0 = 3.9;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53
 
 // --- SYSTEM SPECIFIC PARAMETERS
 
+uint8_t CONVERT=0;
+
 int pwm = 2048; // this is half of PWM_STEPS? todo check
 // --- CONTROL PARAMETERS
 
 float amp = 0.01;  // amp //todo check if f needs to be appended
 int run_motor = 1; // todo replace all int with specific int
 int direction = 1;
-float phase_shift = PI/2 - 0.35; //todo 0.35 is an empirical correction
+float phase_shift = PI/2 + 0.1;// - 0.35; //todo 0.35 is an empirical correction
 
 float stiffness = 0;
 
@@ -300,6 +309,9 @@ uint8_t mode_of_operation = 0; // 0=startup 1=standard
 //enum mode_of_operation{ STARTUP, STANDARD};
 
 uint8_t mode_of_control = 0; // 0=open 1=position
+
+int32_t Enc_Val_total_lim_m = 0;
+int32_t Enc_Val_total_lim_p = 0;
 
 
 
@@ -383,6 +395,7 @@ int main(void)
   calc_lookup(lookup);
 
 	uint8_t buf[400];
+	uint8_t buf_add[200];
 	//uint8_t plot[300];
 
 	char ch='.';
@@ -863,6 +876,14 @@ int main(void)
 				case 'A':
 					pos_freq *= 0.5;
 					break;
+				case 'C':
+					if (CONVERT){
+						CONVERT = 0;
+					}
+					else {
+						CONVERT = 1;
+					}
+					break;
 				case 'R':
 					pos_amp_limit *= 2;
 					break;
@@ -880,7 +901,6 @@ int main(void)
 				case 'n':
 					P_gain *= 0.5;
 					break;
-
 				case 'T':
 					wave_mode = 0;
 					break;
@@ -890,23 +910,27 @@ int main(void)
 				case 'B':
 					wave_mode = 2;
 					break;
+				case 'L':
+					explore_limits();
+					break;
 
 				default:
 					ch='.';
 			}
 
 			//HAL_ADCEx_InjectedStart (&hadc1);
-			HAL_ADCEx_InjectedPollForConversion (&hadc1, 1);
+			//HAL_ADCEx_InjectedPollForConversion (&hadc1, 1); //this command is not necessary to get values - it was in for a long time
 
 			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
 			uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
-			uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3);
+			uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3); //last number refers to rank
 			uint32_t val_M0_TEMP = HAL_ADCEx_InjectedGetValue (&hadc1, 4);
 
 			uint32_t val_SO1 = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
 			uint32_t val_BSENSE = HAL_ADCEx_InjectedGetValue (&hadc2, 2);
 			uint32_t val_STRAIN1 = HAL_ADCEx_InjectedGetValue (&hadc2, 3);
 			uint32_t val_TEMP = HAL_ADCEx_InjectedGetValue (&hadc2, 4);
+			uint32_t val_VBUS = HAL_ADCEx_InjectedGetValue (&hadc2, 5); //TODO this value is not read out correctly - always comes as 0
 
 			uint32_t val_SO2 = HAL_ADCEx_InjectedGetValue (&hadc3, 1);
 			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
@@ -938,21 +962,75 @@ int main(void)
 
 
 						//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
-						sprintf((char*)buf, "%c %d %d %d %d  %d c: %c r: %d %d %d %d %d  _ %d %d %d %d %d %d %d F %d V %d %d A1I %d %d %d %d A2I %d %d %d %d A3I %d %d              \r\n",
-								ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3],rx_character,rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent, (int)(av_start_angle*1000), time10mus, rotation_counter, angle, EncVal, (int)(phase_shift*1000),(int)(phase0*1000),//(int)(amp*100), (int)(phase_shift*100),
-								//(int)(stiffness*1000),
-								//(int)(1000*field_phase_shift), (int)(1000*field_phase_shift_pihalf), field_amplitude,
-								pwmA, //pwmB, pwmC,
-								(int)(1000*av_velocity),
-								EncVal,
-								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
-								val_SO1,
-								//val_BSENSE, val_STRAIN1, val_TEMP,
-								//val_SO2, val_CSENSE),
-								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]
-								);
-								//adc2_buf[0], adc2_buf[1], adc2_buf[2], adc2_buf[3], adc2_buf[4],
-								//adc3_buf[0], adc3_buf[1], adc3_buf[2], adc3_buf[3], adc3_buf[4]);   //A1 %d %d %d %d %d A2 %d %d %d %d %d A3 %d %d %d %d %d
+
+
+						sprintf((char*)buf, "tx: %c %4d %4d %4d %4d ", ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3]);
+
+						sprintf((char*)buf_add, " rx:%c %4d %4d %4d %4d %4d", rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " p0:%4.2f", phase0); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " ps:%4.2f", phase_shift); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " amp:%3.2f", amp); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " av:%5.2f", av_start_angle); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " a:%5d", angle); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " E:%5d", EncVal); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " c:%5d", rotation_counter); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " v:%6.2f", av_velocity); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " s:%4.3f", stiffness); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " d:%2d", direction); strcat(buf, buf_add);
+
+						if (CONVERT){
+							float SO0 = ((float)val_I - 2040.0) * 0.134; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+							float SO1 = ((float)val_SO1 - 2002.0) * 0.189; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
+							float SO2 = ((float)val_SO2 - 2002.0) * 0.189; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+							sprintf((char*)buf_add, " I:%5.2fA SO1:%5.2fA SO2:%5.2fA", SO0, SO1, SO2); strcat(buf, buf_add);
+
+							float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
+							sprintf((char*)buf_add, " It:%5.2fA", I_tot); strcat(buf, buf_add);
+						}
+						else{
+							sprintf((char*)buf_add, " I:%4d SO1:%4d SO2:%4d", val_I, val_SO1, val_SO2); strcat(buf, buf_add);
+						}
+
+						sprintf((char*)buf_add, " A:%4d B:%4d C:%4d", val_ASENSE, val_BSENSE, val_CSENSE); strcat(buf, buf_add);
+
+						if (CONVERT){
+							float STRAIN0 = ((float)val_STRAIN0 - 2235.0) * 1.678; // 3.3/4095/0.00048[gain see page 114] = 1.678
+							float STRAIN1 = ((float)val_STRAIN1 - 2235.0) * 1.678;
+							sprintf((char*)buf_add, " S0:%5.1fN S1:%4dN", STRAIN0, val_STRAIN1); strcat(buf, buf_add);
+						}
+						else{
+							sprintf((char*)buf_add, " S0:%4d S1:%4d", val_STRAIN0, val_STRAIN1); strcat(buf, buf_add);
+						}
+
+						sprintf((char*)buf_add, " TM:%4d TC:%4d V:%4d", val_TEMP, val_M0_TEMP, val_VBUS); strcat(buf, buf_add);
+
+						//sprintf((char*)buf_add, " ADC: %4d %4d %4d %4d %4d", adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]); strcat(buf, buf_add);
+
+						if (val_TEMP > 1900){
+							sprintf((char*)buf_add, "* >50C on ESC"); strcat(buf, buf_add);
+						}
+
+						if (val_M0_TEMP > 1900){
+							sprintf((char*)buf_add, "* >50C on MOTOR"); strcat(buf, buf_add);
+						}
+
+						if (val_STRAIN0 < 2170){
+							sprintf((char*)buf_add, "* -100N force"); strcat(buf, buf_add);
+						}
+
+						sprintf((char*)buf_add, " p:%5d m:%5d", Enc_Val_total_lim_p, Enc_Val_total_lim_m); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " \r\n"); strcat(buf, buf_add);
 
 
 			//			sprintf((char*)buf, "%c# AI %d %d %d %d A1 %d %d %d %d %d            \r\n",
@@ -967,6 +1045,7 @@ int main(void)
 			//			buf[100] = '.';
 			//			buf[50] = '|';
 			//			buf[100 + max(-50, min(50, (int)av_velocity))] = 'v';
+
 
 
 						if (buf_msgs[0] != '\0'){
@@ -2435,6 +2514,34 @@ void step_through_pwm_percent(void){
 	normal_operation_enabled = true;
 }
 
+void explore_limits(void){
+	amp = 0;
+	HAL_Delay(100);
+	for (direction=-1;direction<2; direction+=2){
+		HAL_Delay(500);
+		amp=0.1;
+		for (int16_t i = 0; i<50; i++){
+			HAL_Delay(100);
+			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+			if (val_I > 2100 || val_I < 1980){
+				amp=0;
+				uint32_t EncVal_lim = TIM8->CNT;
+				if (direction==-1){
+					Enc_Val_total_lim_m = EncVal_lim + rotation_counter * ENC_STEPS;
+				}
+				else{
+					Enc_Val_total_lim_p = EncVal_lim + rotation_counter * ENC_STEPS;
+
+				}
+
+				break;
+			}
+		}
+	}
+
+	amp = 0.01;
+}
+
 
 
 
@@ -2491,6 +2598,14 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 
 	//HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 }
+
+//uint16_t convertVal2Temp(uint16_t val_T){
+//	if (T < 584){
+//		return 0 + 10*
+//	}
+//}
+
+
 
 void calc_lookup(float *lookup){
 	// TODO plug in a higher order harmonic and see if system gets more energy efficient or more silent
