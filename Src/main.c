@@ -220,10 +220,23 @@ void update_pwm(void);
 //#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x13
 
-//--ESC_ID = 100; // ankle pitch
+//--ESC_ID = 100; // test rig for muscle mp with 5045
 float phase0 = 1.2;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define CAN_ID 0x100
+#define INVERT 0
+
+//--ESC_ID = 100; // clavicle yaw
+//float phase0 = -1.232;  // set to at ABC=0 angle*2*pi/2000*N_poles=angle*0.0220 = (1944-2000)*0.022=-1.232//$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x163 //first number is left right 1=left 2=right 3=center; 2nd number is joint (1=toe 2=ankle 3=knee 4=hip 5=torso 6=clavicle 7=shoulder 8=elbow 9=wrist ...); 3rd number is xyz (1=x=roll, 2=y=pitch, 3=z=yaw)
+//#define INVERT 1
+
+//--ESC_ID = 100; // shoulder yaw
+//float phase0 = 0;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x173
+//#define INVERT 0
 
 
 
@@ -247,7 +260,7 @@ int pwm = 2048; // this is half of PWM_STEPS? todo check
 
 float amp = 0.01;  // amp //todo check if f needs to be appended
 int run_motor = 1; // todo replace all int with specific int
-int direction = 1;
+//int direction = 1;
 float phase_shift = PI/2 + 0.1;// - 0.35; //todo 0.35 is an empirical correction
 
 float stiffness = 0;
@@ -256,7 +269,7 @@ float pos_amp = 100.0f;
 float pos_freq = 0.5f;
 float pos_amp_limit = 0.2f;
 int32_t pos_offset = 0;
-float P_gain = -0.0005;
+float P_gain = 0.0005;
 
 // --- INITIALIZE OTHER GLOBALS
 int16_t EncVal;
@@ -820,13 +833,13 @@ int main(void)
 					run_motor = 0;
 					break;
 				case 'h':
-					direction = 1; //positive should be clockwise == EncVal increases positive :)
+					amp = abs(amp); //positive should be clockwise == EncVal increases positive :)
 					break;
 				case 'f':
-					direction = -1;
+					amp = -abs(amp);
 					break;
 				case 'r':
-					direction *= -1;
+					amp = -amp;
 					break;
 				case 'z':
 					playSound( 1, 20, 100);
@@ -986,7 +999,7 @@ int main(void)
 
 						sprintf((char*)buf_add, " s:%4.3f", stiffness); strcat(buf, buf_add);
 
-						sprintf((char*)buf_add, " d:%2d", direction); strcat(buf, buf_add);
+						//sprintf((char*)buf_add, " d:%2d", direction); strcat(buf, buf_add);
 
 						if (CONVERT){
 							float SO0 = ((float)val_I - 2040.0) * 0.134; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
@@ -1104,14 +1117,15 @@ void CAN1_RX0_IRQHandler(void)
 		//rx_character_armed = 1;
 	}
 	if (rx_mode_0 == 0){
-		if (rx_control_1 > 2048){
-			amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
-			direction = 1;
-		}
-		else {
-			amp = (-((float)rx_control_1)+2048) / 2048.0 / 2.5;
-			direction = -1;
-		}
+		amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
+//		if (rx_control_1 > 2048){
+//			amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
+//			direction = 1;
+//		}
+//		else {
+//			amp = (-((float)rx_control_1)+2048) / 2048.0 / 2.5;
+//			direction = -1;
+//		}
 	}
 
 	//encode TX can message
@@ -2447,10 +2461,21 @@ void step_through_pole_angles(void){
 				TIM1->CCR1 = step_through_amp;
 			}
 			else if (ABC==1){
-				TIM1->CCR2 = step_through_amp;
+				if (INVERT){
+					TIM1->CCR3 = step_through_amp;
+				}
+				else{
+					TIM1->CCR2 = step_through_amp;
+				}
+
 			}
 			else {
-				TIM1->CCR3 = step_through_amp;
+				if (INVERT){
+					TIM1->CCR2 = step_through_amp;
+				}
+				else{
+					TIM1->CCR3 = step_through_amp;
+				}
 			}
 			HAL_Delay(200);
 			pole_angles[pole * N_PHASES + ABC]=TIM8->CNT;
@@ -2517,16 +2542,16 @@ void step_through_pwm_percent(void){
 void explore_limits(void){
 	amp = 0;
 	HAL_Delay(100);
-	for (direction=-1;direction<2; direction+=2){
+	for (int8_t dir=-1;dir<2; dir+=2){
 		HAL_Delay(500);
-		amp=0.1;
+		amp= dir * 0.1;
 		for (int16_t i = 0; i<50; i++){
 			HAL_Delay(100);
 			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
 			if (val_I > 2100 || val_I < 1980){
 				amp=0;
 				uint32_t EncVal_lim = TIM8->CNT;
-				if (direction==-1){
+				if (dir==-1){
 					Enc_Val_total_lim_m = EncVal_lim + rotation_counter * ENC_STEPS;
 				}
 				else{
@@ -2662,22 +2687,27 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 
 		int32_t Enc_Val_total = EncVal + rotation_counter * ENC_STEPS;
 		float raw_amp = (float)(Enc_Val_total - desired_EncVal) * P_gain; //oscillates for P_gain > 0.005
-		if (raw_amp < 0.0){
-			raw_amp = -raw_amp;
-			direction = -1;
-		}
-		else{
-			direction = 1;
-		}
+		float raw_amp_check = raw_amp;
+//		if (raw_amp < 0.0){
+//			raw_amp = -raw_amp;
+//			direction = -1;
+//		}
+//		else{
+//			direction = 1;
+//		}
 		if (raw_amp > pos_amp_limit){
 			raw_amp = pos_amp_limit;
+		}
+		if (raw_amp < - pos_amp_limit){
+			raw_amp = - pos_amp_limit;
 		}
 		amp = raw_amp;
 
 		if (buf_msgs[0] == '\0'){
-			sprintf((char*)buf_msg, "[HEART] raw_a: %d %d Enc_tot: %d a: %d f: %d lim: %d off: %d g: %d\r\n",
+			sprintf((char*)buf_msg, "[HEART] raw_a: %d %d %d Enc_tot: %d a: %d f: %d lim: %d off: %d g: %d\r\n",
 					(int)((float)(Enc_Val_total - desired_EncVal) * 0.0005*1000),
 					(int)(raw_amp*1000),
+					(int)(raw_amp_check*1000),
 					(int)Enc_Val_total,
 					(int)(pos_amp),
 					(int)(pos_freq*1000),
@@ -2880,23 +2910,26 @@ void update_pwm(void){
 	//phase = -phase;
 
 	float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
-	float modified_amp = amp + stiffness * av_velocity * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
+	float modified_amp = amp + stiffness * av_velocity;// * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
 	//u0 *= amp;  //takes<200ns
 	if (modified_amp > AMP_LIMIT){
 		modified_amp = AMP_LIMIT;
 	}
-//	else if (modified_amp < -AMP_LIMIT){
-//		modified_amp = -AMP_LIMIT;
-//	}
-	u0 *= modified_amp;  //takes<200ns
-	u0 *= run_motor;  //takes<200ns
+	if (modified_amp < -AMP_LIMIT){
+		modified_amp = -AMP_LIMIT;
+	}
 
-	if (direction == 1){
+
+
+	if (modified_amp > 0){
 		phase -= phase_shift;  //takes<200ns
+		u0 *= modified_amp;  //takes<200ns
 	}
 	else {
 		phase += phase_shift;
+		u0 *= -modified_amp;  //takes<200ns
 	}
+	u0 *= run_motor;  //takes<200ns
 
 //
 
@@ -2988,8 +3021,15 @@ void update_pwm(void){
 		// --- PWM pulses 0...2048
 		if (normal_operation_enabled){
 			TIM1->CCR1 = pwmA; //takes<150ns
-			TIM1->CCR2 = pwmB; //takes<150ns
-			TIM1->CCR3 = pwmC; //takes<150ns
+			if (INVERT){
+				TIM1->CCR3 = pwmB; //takes<150ns
+				TIM1->CCR2 = pwmC; //takes<150ns
+			}
+			else {
+				TIM1->CCR2 = pwmB; //takes<150ns
+				TIM1->CCR3 = pwmC; //takes<150ns
+			}
+
 		}
 	}
 
