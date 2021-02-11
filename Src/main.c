@@ -16,6 +16,14 @@
   *
   ******************************************************************************
   */
+
+//Big todo
+// - reliable programming and rieadout of angle sensor
+// - booting up from switch on without reset
+// - reliable play button when writing code
+// - analog channels work on one board only
+
+
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -53,7 +61,7 @@
 #define ENC_STEPS_HALF 1000 // to be set equal to  ENC_STEPS / 2
 #define ENC_RESOLUTION 16384 // 14 bit resolution for angle reading via SPI
 #define ENC_TOLERANCE 2
-//#define N_POLES 20//7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
 #define N_PHASES 3
 
 #define PWM_STEPS 4096
@@ -111,13 +119,7 @@ CAN_TxHeaderTypeDef pHeader;
 CAN_RxHeaderTypeDef pRxHeader;
 uint32_t TxMailbox;
 uint8_t tx_msg[6];
-//tx_msg[0] = (uint8_t)111;
-//tx_msg[1] = (uint8_t)111;
-//tx_msg[2] = (uint8_t)111;
-//tx_msg[3] = (uint8_t)111;
-//tx_msg[4] = (uint8_t)111;
-//tx_msg[5] = (uint8_t)111;
-uint8_t rx_msg[4];//=0;
+uint8_t rx_msg[4];
 //uint8_t rx_character_armed = 0;
 char rx_character_buffered = '.';
 char rx_character = '.';
@@ -194,31 +196,29 @@ void update_pwm(void);
 // --- MOTOR SPECIFIC PARAMETERS
 
 
-
-
-
-
-
-
 ////--ESC_ID = 0; // test
 //float phase0 = 0.6;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 20 // 7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x10
+//#define INVERT 0
 
 //--ESC_ID = 1; // hip pitch
 //float phase0 = 0.0;
 //#define  N_POLES 21 //black motor
 //#define CAN_ID 0x11
+//#define INVERT 0
 
 //--ESC_ID = 2; // knee
 //float phase0 = 3.9;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
 //#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x12
+//#define INVERT 0
 
 //--ESC_ID = 3; // ankle pitch
 //float phase0 = 0.4;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x13
+//#define INVERT 0
 
 //--ESC_ID = 100; // test rig for muscle mp with 5045
 float phase0 = 1.2;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
@@ -240,17 +240,6 @@ float phase0 = 1.2;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
 
 
-
-
-
-//Big todo
-// - reliable programming and rieadout of angle sensor
-// - booting up from switch on without reset
-// - reliable play button when writing code
-// - analog channels work on one board only
-
-
-
 // --- SYSTEM SPECIFIC PARAMETERS
 
 uint8_t CONVERT=0;
@@ -261,7 +250,7 @@ int pwm = 2048; // this is half of PWM_STEPS? todo check
 float amp = 0.01;  // amp //todo check if f needs to be appended
 int run_motor = 1; // todo replace all int with specific int
 //int direction = 1;
-float phase_shift = PI/2 + 0.1;// - 0.35; //todo 0.35 is an empirical correction
+float phase_shift = PI/2 + 0.1; //todo 0.1 is an empirical correction
 
 float stiffness = 0;
 
@@ -336,6 +325,7 @@ time_of_last_pwm_update = 0; //todo define
 // --- LOOKUPS
 
 float lookup[210];
+float amp_harmonic = 1.0f;
 
 
 
@@ -926,6 +916,14 @@ int main(void)
 				case 'L':
 					explore_limits();
 					break;
+				case 'I':
+					amp_harmonic += 0.1f;
+					calc_lookup(lookup);
+					break;
+				case 'K':
+					amp_harmonic -= 0.1f;
+					calc_lookup(lookup);
+					break;
 
 				default:
 					ch='.';
@@ -998,6 +996,8 @@ int main(void)
 						sprintf((char*)buf_add, " v:%6.2f", av_velocity); strcat(buf, buf_add);
 
 						sprintf((char*)buf_add, " s:%4.3f", stiffness); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " h:%4.3f", amp_harmonic); strcat(buf, buf_add);
 
 						//sprintf((char*)buf_add, " d:%2d", direction); strcat(buf, buf_add);
 
@@ -1087,97 +1087,6 @@ int main(void)
   /* USER CODE END 3 */
 }
 
-
-
-
-
-/**
-  * @brief This function handles CAN1 RX0 interrupts.
-  */
-void CAN1_RX0_IRQHandler(void)
-{
-  /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
-
-  /* USER CODE END CAN1_RX0_IRQn 0 */
-  HAL_CAN_IRQHandler(&hcan1);
-  /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
-  HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &pRxHeader, &rx_msg);
-
-
-  //decode RX can message
-  rx_character = (rx_msg[0]) ;
-  rx_control_0 = (rx_msg[1]) ;
-	rx_control_1 = (uint16_t)rx_msg[2] << 4 | rx_msg[3] >> 4;
-	rx_mode_0 = (rx_msg[3] >> 3) & 1;
-	rx_mode_1 = (rx_msg[3] >> 2) & 1;
-	rx_intent = (rx_msg[3]) & 3;
-	//uint16_t rc2 = (uint16_t)(rx_msg[2] & ((1<<5)-1)) << 6 | rx_msg[3] >> 2;
-	if (rx_character != '.'){
-		rx_character_buffered = rx_character;
-		//rx_character_armed = 1;
-	}
-	if (rx_mode_0 == 0){
-		amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
-//		if (rx_control_1 > 2048){
-//			amp = (((float)rx_control_1)-2048) / 2048.0 / 2.5;
-//			direction = 1;
-//		}
-//		else {
-//			amp = (-((float)rx_control_1)+2048) / 2048.0 / 2.5;
-//			direction = -1;
-//		}
-	}
-
-	//encode TX can message
-		uint8_t v8= 100;
-		uint16_t tx_pos = (uint16_t)((rotation_counter * ENC_STEPS + EncVal) / 16 + 2048);
-		uint16_t tx_av_velocity = (uint16_t) (av_velocity*10 + 2048);
-
-		tx_msg[0] = v8; //current
-		tx_msg[1] = v8; //Tmotor
-		tx_msg[2] = v8; //Tboard
-		tx_msg[3] = (uint8_t)(tx_pos >> 4);
-		tx_msg[4] = (uint8_t)(tx_pos << 4);
-		tx_msg[4] = tx_msg[4] | (uint8_t)(tx_av_velocity >> 8);
-		tx_msg[5] = (uint8_t)(tx_av_velocity);
-
-
-	//	tx_msg[1] = (uint8_t)(v16 >> 8);
-	//	tx_msg[2] = (uint8_t)v16;
-	//	tx_msg[3] = (uint8_t)(v12 >> 4);
-	//	tx_msg[4] = (uint8_t)(v12 << 4);
-	//	tx_msg[4] = tx_msg[4] | (v1_0 << 3) ;
-	//	tx_msg[4] = tx_msg[4] | (v1_1 << 2) ;
-	//	tx_msg[4] = tx_msg[4] | (v1_2 << 1) ;
-
-
-		//can_pending_before = HAL_CAN_IsTxMessagePending(&hcan1, &TxMailbox);
-
-		//HAL_CAN_AbortTxRequest(&hcan1, &TxMailbox);
-
-
-
-		//if (can_pending_before == 0){
-		HAL_CAN_AddTxMessage(&hcan1, &pHeader, &tx_msg, &TxMailbox);//somehow there is  a 4 second delay todo
-		//}
-
-		//can_pending_after = HAL_CAN_IsTxMessagePending(&hcan1, &TxMailbox);
-
-
-
-
-
-
-
-
-
-  /* USER CODE END CAN1_RX0_IRQn 1 */
-}
-
-
-
-
-
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -1243,6 +1152,7 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 0 */
 
+  ADC_MultiModeTypeDef multimode = {0};
   ADC_ChannelConfTypeDef sConfig = {0};
   ADC_InjectionConfTypeDef sConfigInjected = {0};
 
@@ -1255,15 +1165,23 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 5;
+  hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = ENABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure the ADC multi-mode 
+  */
+  multimode.Mode = ADC_TRIPLEMODE_INJECSIMULT;
+  multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_5CYCLES;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1272,38 +1190,6 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-  */
-  sConfig.Channel = ADC_CHANNEL_11;
-  sConfig.Rank = 2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-  */
-  sConfig.Channel = ADC_CHANNEL_14;
-  sConfig.Rank = 3;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-  */
-  sConfig.Channel = ADC_CHANNEL_5;
-  sConfig.Rank = 4;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-  */
-  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
-  sConfig.Rank = 5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1377,14 +1263,12 @@ static void MX_ADC2_Init(void)
   hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
   hadc2.Init.Resolution = ADC_RESOLUTION_12B;
   hadc2.Init.ScanConvMode = ENABLE;
-  hadc2.Init.ContinuousConvMode = ENABLE;
+  hadc2.Init.ContinuousConvMode = DISABLE;
   hadc2.Init.DiscontinuousConvMode = DISABLE;
-  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc2.Init.NbrOfConversion = 5;
   hadc2.Init.DMAContinuousRequests = ENABLE;
-  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc2.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc2) != HAL_OK)
   {
     Error_Handler();
@@ -1436,8 +1320,6 @@ static void MX_ADC2_Init(void)
   sConfigInjected.InjectedRank = 1;
   sConfigInjected.InjectedNbrOfConversion = 4;
   sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
-  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISINGFALLING;
-  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4;
   sConfigInjected.AutoInjectedConv = DISABLE;
   sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
   sConfigInjected.InjectedOffset = 0;
@@ -1499,14 +1381,12 @@ static void MX_ADC3_Init(void)
   hadc3.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
   hadc3.Init.Resolution = ADC_RESOLUTION_12B;
   hadc3.Init.ScanConvMode = ENABLE;
-  hadc3.Init.ContinuousConvMode = ENABLE;
+  hadc3.Init.ContinuousConvMode = DISABLE;
   hadc3.Init.DiscontinuousConvMode = DISABLE;
-  hadc3.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc3.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc3.Init.NbrOfConversion = 5;
   hadc3.Init.DMAContinuousRequests = ENABLE;
-  hadc3.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc3.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc3) != HAL_OK)
   {
     Error_Handler();
@@ -1558,8 +1438,6 @@ static void MX_ADC3_Init(void)
   sConfigInjected.InjectedRank = 1;
   sConfigInjected.InjectedNbrOfConversion = 4;
   sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
-  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISINGFALLING;
-  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4;
   sConfigInjected.AutoInjectedConv = DISABLE;
   sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
   sConfigInjected.InjectedOffset = 0;
@@ -2597,7 +2475,6 @@ void delay_SPI(void){
 
 void myDelay(void){
 	HAL_Delay(1);
-
 }
 
 void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
@@ -2635,7 +2512,13 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 void calc_lookup(float *lookup){
 	// TODO plug in a higher order harmonic and see if system gets more energy efficient or more silent
 	for (int i=0; i<210; i++){
-	    lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
+	    //lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
+
+		  // --- harmonic
+	    //lookup[i] = cos((float)i/100.0)       + amp_harmonic * cos( (float)i/100.0       * 3.0f)    +  cos((float)i/100.0-1.047) + amp_harmonic * cos(((float)i/100.0-1.047)* 3.0f) ;// the harmonic tends to fully cancel out
+
+			// --- power law
+			lookup[i] = pow( cos((float)i/100.0) + cos((float)i/100.0-1.047),amp_harmonic)/ pow(amp_harmonic,0.5); //looks like 1.0 is already best in terms of overtones
 	}
 }
 
