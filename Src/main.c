@@ -22,6 +22,7 @@
 // - booting up from switch on without reset
 // - reliable play button when writing code
 // - analog channels work on one board only
+// - increase encoder steps to get better resolution in v and a
 
 
 /* USER CODE END Header */
@@ -56,6 +57,14 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define DB_TIMING 1
+#define FOC_ALG 1
+
+#define PI 3.14159f
+#define PI2 6.28318f
+
+#define INV_SQRT_3 0.57735f //allowed great speed up!
+
 //#define USE_HAL_TIM_REGISTER_CALLBACKS 1    // TODO work out other callback for encoder
 #define ENC_STEPS 2000 // edge changes on A and B outputs - Note that ARR in TIM8 needs to be set to ENC_STEPS-1
 #define ENC_STEPS_HALF 1000 // to be set equal to  ENC_STEPS / 2
@@ -66,7 +75,24 @@
 
 #define PWM_STEPS 4096
 #define PWM_1PERCENT 41 // set this to 1% of the PWM_STEP
-#define AMP_LIMIT 0.9
+#define AMP_LIMIT 0.9f
+
+
+
+#define BUF_LEN 400
+#define BUF_ADD_LEN 200
+
+#define DB1H debug1_out_GPIO_Port->BSRR = debug1_out_Pin
+#define DB1L debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U
+
+#define ANALOG_SAMPLES_BITSHIFT 5
+#define ANALOG_SAMPLES_N 32 // must be 2^ANALOG_SAMPLES_BITSHIFT
+
+#define FOC_PHASE_LIM 0.3f
+
+#define PWM_F 2048.0f
+
+
 
 /* USER CODE END PD */
 
@@ -162,7 +188,7 @@ static void MX_TIM3_Init(void);
 static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
 void delayMs( int delay);
-void playSound(uint16_t periode, uint16_t volume, uint16_t cycles);
+void playSound(uint32_t periode, uint32_t volume, uint32_t cycles);
 //void TIM8_IRQHandler(void);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
@@ -173,6 +199,8 @@ void HAL_TIM_TriggerHalfCpltCallback(TIM_HandleTypeDef *htim);
 //void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
 //void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
 void calc_lookup(float *lookup);
+void calc_sin_lookup(float *sin_lookup);
+void calc_cos_lookup(float *cos_lookup);
 void myDelay(void);
 void delay_SPI(void);
 void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma);
@@ -182,10 +210,13 @@ void step_through_pole_angles(void);
 void step_through_pwm_percent(void);
 void explore_limits(void);
 void set_pwm_off(void);
+void calc_v(void);
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 
 void update_pwm(void);
+
+void timing_party(void);
 
 /* USER CODE END PFP */
 
@@ -197,43 +228,43 @@ void update_pwm(void);
 
 
 ////--ESC_ID = 0; // test
-//float phase0 = 0.6;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//float phase0 = 0.6f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 20 // 7(14 magnets, 12 coils) //20//(40 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x10
 //#define INVERT 0
 
 //--ESC_ID = 1; // hip pitch
-//float phase0 = 0.0;
+//float phase0 = 0.0f;
 //#define  N_POLES 21 //black motor
 //#define CAN_ID 0x11
 //#define INVERT 0
 
 //--ESC_ID = 2; // knee
-//float phase0 = 3.9;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
+//float phase0 = 3.9f;//backcalc after correction: =3.5-->56=enc_val //angle_enc=53 for ABC = 0 - for 20 poles 2pi is 18degree=100angle_enc --> 53 is 1.06pi
 //#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x12
 //#define INVERT 0
 
 //--ESC_ID = 3; // ankle pitch
-//float phase0 = 0.4;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//float phase0 = 0.4f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 20 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x13
 //#define INVERT 0
 
 //--ESC_ID = 100; // test rig for muscle mp with 5045
-float phase0 = 1.2;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+float phase0 = 1.2f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define CAN_ID 0x100
 #define INVERT 0
 
 //--ESC_ID = 100; // clavicle yaw
-//float phase0 = -1.232;  // set to at ABC=0 angle*2*pi/2000*N_poles=angle*0.0220 = (1944-2000)*0.022=-1.232//$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//float phase0 = -1.232f;  // set to at ABC=0 angle*2*pi/2000*N_poles=angle*0.0220 = (1944-2000)*0.022=-1.232//$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x163 //first number is left right 1=left 2=right 3=center; 2nd number is joint (1=toe 2=ankle 3=knee 4=hip 5=torso 6=clavicle 7=shoulder 8=elbow 9=wrist ...); 3rd number is xyz (1=x=roll, 2=y=pitch, 3=z=yaw)
 //#define INVERT 1
 
 //--ESC_ID = 100; // shoulder yaw
-//float phase0 = 0;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//float phase0 = 0f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 //#define CAN_ID 0x173
 //#define INVERT 0
@@ -242,15 +273,19 @@ float phase0 = 1.2;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
 // --- SYSTEM SPECIFIC PARAMETERS
 
+enum Control_method {sinusoidal = 0, trapezoidal = 1, freerun = 2} ;
+control_method = sinusoidal;
+
 uint8_t CONVERT=0;
 
 int pwm = 2048; // this is half of PWM_STEPS? todo check
+float pwm_float = 2048.0f;
 // --- CONTROL PARAMETERS
 
-float amp = 0.01;  // amp //todo check if f needs to be appended
-int run_motor = 1; // todo replace all int with specific int
+float amp = 0.01f;  // amp //todo check if f needs to be appended
+bool sw_enable_pwm = true;
 //int direction = 1;
-float phase_shift = PI/2 + 0.1; //todo 0.1 is an empirical correction
+float phase_shift = PI/2 ; //todo 0.1f is an empirical correction and is to be replaced by FOC
 
 float stiffness = 0;
 
@@ -258,20 +293,20 @@ float pos_amp = 100.0f;
 float pos_freq = 0.5f;
 float pos_amp_limit = 0.2f;
 int32_t pos_offset = 0;
-float P_gain = 0.0005;
+float P_gain = 0.0005f;
 
 // --- INITIALIZE OTHER GLOBALS
-int16_t EncVal;
-int16_t last_EncVal;
-int16_t last_EncVal_v;
+int32_t EncVal;
+int32_t last_EncVal;
+int32_t last_EncVal_v;
 
-int16_t rotation_counter = 0;
-//int16_t rotation_counter_abs = 0; // TODO if useful
+int32_t rotation_counter = 0;
+//int32_t rotation_counter_abs = 0; // TODO if useful
 bool counter0ing_at0crossing = true;
-float phase = 0;
-int int_phase = 0;
-float velocity = 0;
-float av_velocity = 0;
+float phase = 0.0f;
+//int field_phase_int = 0;
+float velocity = 0.0f;
+float av_velocity = 0.0f;
 int pwmA = 0;
 int pwmB = 0;
 int pwmC = 0;
@@ -280,12 +315,14 @@ int skip_update = 0;
 int skip_update_high_v = 0;
 
 
-uint16_t adc1_buf[30];
-uint16_t adc2_buf[30];
-uint16_t adc3_buf[30];
+uint16_t adc1_buf[8];
+uint16_t adc2_buf[8];
+uint16_t adc3_buf[8];
 
 uint16_t val_SO1_buf_index = 0;
-uint32_t val_SO1_buf[200];
+uint16_t val_SO1_buf[200];
+
+int32_t pole_phase_int;
 
 float field_phase_shift = 0;
 float field_phase_shift_pihalf = 0;
@@ -315,20 +352,54 @@ uint8_t mode_of_control = 0; // 0=open 1=position
 int32_t Enc_Val_total_lim_m = 0;
 int32_t Enc_Val_total_lim_p = 0;
 
-
-
 uint32_t last_tim5_cnt = 0 ;
 
-time_of_last_pwm_update = 0; //todo define
-//dtime_since_last_pwm_update = 4294967295;
 
 // --- LOOKUPS
 
 float lookup[210];
+float sin_lookup[628];
+float cos_lookup[628];
 float amp_harmonic = 1.0f;
 
+uint32_t acc_STRAIN0 = 0; //last number refers to rank
+
+uint32_t val_I = 0;
+uint32_t val_ASENSE = 0;
+uint32_t val_STRAIN0 = 0; //last number refers to rank
+uint32_t val_M0_TEMP = 0;
+
+uint32_t val_SO1 = 0;
+uint32_t val_BSENSE = 0;
+uint32_t val_STRAIN1 = 0;
+uint32_t val_TEMP = 0;
+//uint32_t val_VBUS = 0; //TODO this value is not read out correctly - always comes as 0
+
+uint32_t val_SO2 = 0;
+uint32_t val_CSENSE = 0;
 
 
+uint8_t analog_samples_counter = 0;
+
+float direct_component = 0.0f;
+float direct_component_lp = 0.0f;
+float quadrature_component = 0.0f;
+float quadrature_component_lp = 0.0f;
+float A_mean= 2040.0f;
+float B_mean= 2005.0f;
+float C_mean= 2005.0f;
+int32_t component_counter = 0;
+int32_t direct_component_sum = 0;
+int32_t quadrature_component_sum = 0;
+
+float FOC_phase_shift = 0.0f;
+
+float generic_gain = 1.0f;
+float generic_n = 0.0f;
+
+float p = 0.0f;
+float a;
+float b;
 
 /* USER CODE END 0 */
 
@@ -396,9 +467,11 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   calc_lookup(lookup);
+  calc_sin_lookup(sin_lookup);
+  calc_cos_lookup(cos_lookup);
 
-	uint8_t buf[400];
-	uint8_t buf_add[200];
+	char buf[BUF_LEN]; //todo switch to char
+	char buf_add[BUF_ADD_LEN];
 	//uint8_t plot[300];
 
 	char ch='.';
@@ -445,6 +518,8 @@ int main(void)
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_3);
 	HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_4);
+
+	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_4);
 
 	playSound( 3, 100, 20);
 
@@ -570,7 +645,7 @@ int main(void)
 	uint8_t spi_address_8[2];
 	uint8_t spi_value_8[2];
 
-	//todo UGLY BUG - Ugly FIX: now i just send the init below twice because somehow the communication of the first transaction does not seem to work-- i sse on the MISO signal the lines just pulls up to 0.5V instead of 3V but it works fine for the next transmission so it gets initialized correctly if i sent it twice
+	//todo UGLY BUG - Ugly FIX: now i just send the init below twice because somehow the communication of the first transaction does not seem to work-- i sse on the MISO signal the lines just pulls up to 0.5fV instead of 3V but it works fine for the next transmission so it gets initialized correctly if i sent it twice
 
 	// --- set ABI and enable PWM
 	spi_address_8[1]= 0x00;//
@@ -657,7 +732,7 @@ int main(void)
 
 	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
 	//angle &= AS_DATA_MASK;
-	EncVal = (uint16_t) ((float)angle /16384.0 * ENC_STEPS);
+	EncVal = (uint32_t) ((float)angle /16384.0f * ENC_STEPS);
 	last_EncVal = EncVal;
 	last_EncVal_v = EncVal;
 	TIM8->CNT = EncVal;
@@ -668,7 +743,7 @@ int main(void)
 //	HAL_Delay(500);
 //	EncVal = TIM8->CNT;//takes 200ns
 //	TIM1->CCR1 = 0;
-//	phase = (float) EncVal * 0.02199 ;
+//	phase = (float) EncVal * 0.02199f ;
 
 	// --- UART DMA
 	HAL_DMA_RegisterCallback(&hdma_usart3_tx, HAL_DMA_XFER_CPLT_CB_ID, &DMAUSARTTransferComplete);
@@ -686,6 +761,8 @@ int main(void)
 	HAL_ADCEx_InjectedStart (&hadc1);
 	HAL_ADCEx_InjectedStart (&hadc2);
 	HAL_ADCEx_InjectedStart (&hadc3); // again this seems to break  the full loop
+
+
 //
 //
 
@@ -741,10 +818,10 @@ int main(void)
 		// --- FAST PROCESS ----------------------------------------------------
 		// -------------------------------------------------------------
 
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-  	debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-  	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+  	//debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+  	//debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
+  	//debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+		//debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
 
 
 		// 3measurements take 25mus --- one just 5mus --- 7 take 50mus
@@ -805,22 +882,22 @@ int main(void)
 					amp /= 2;
 					break;
 				case 'a':
-					phase_shift -= 0.05;
+					phase_shift -= 0.05f;
 					break;
 				case 'd':
-					phase_shift += 0.05;
+					phase_shift += 0.05f;
 					break;
 				case 'q':
-					phase0 -= 0.05;
+					phase0 -= 0.05f;
 					break;
 				case 'e':
-					phase0 += 0.05;
+					phase0 += 0.05f;
 					break;
 				case 't':
-					run_motor = 1;
+					sw_enable_pwm = true;
 					break;
 				case 'g':
-					run_motor = 0;
+					sw_enable_pwm = false;
 					break;
 				case 'h':
 					amp = abs(amp); //positive should be clockwise == EncVal increases positive :)
@@ -835,10 +912,10 @@ int main(void)
 					playSound( 1, 20, 100);
 					break;
 				case 'u':
-					stiffness += 0.001;
+					stiffness += 0.001f;
 					break;
 				case 'j':
-					stiffness -= 0.001;
+					stiffness -= 0.001f;
 					break;
 				case 'p':
 					//print2uart = false;
@@ -863,7 +940,7 @@ int main(void)
 					break;
 				case 'k':
 					mode_of_control = 0;
-					amp = 0.05;
+					amp = 0.05f;
 					break;
 
 				// pos control
@@ -871,13 +948,13 @@ int main(void)
 					pos_amp *= 2;
 					break;
 				case 'S':
-					pos_amp *= 0.5;
+					pos_amp *= 0.5f;
 					break;
 				case 'D':
 					pos_freq *= 2;
 					break;
 				case 'A':
-					pos_freq *= 0.5;
+					pos_freq *= 0.5f;
 					break;
 				case 'C':
 					if (CONVERT){
@@ -891,27 +968,27 @@ int main(void)
 					pos_amp_limit *= 2;
 					break;
 				case 'F':
-					pos_amp_limit *= 0.5;
+					pos_amp_limit *= 0.5f;
 				case 'E':
 					pos_offset += 200;
 					break;
 				case 'Q':
 					pos_offset -= 200;
 					break;
-				case 'm':
+				case 'M':
 					P_gain *= 2;
 					break;
-				case 'n':
-					P_gain *= 0.5;
+				case 'N':
+					P_gain *= 0.5f;
 					break;
 				case 'T':
-					wave_mode = 0;
+					control_method = sinusoidal;
 					break;
 				case 'G':
-					wave_mode = 1;
+					control_method = trapezoidal;
 					break;
 				case 'B':
-					wave_mode = 2;
+					control_method = freerun;
 					break;
 				case 'L':
 					explore_limits();
@@ -924,6 +1001,18 @@ int main(void)
 					amp_harmonic -= 0.1f;
 					calc_lookup(lookup);
 					break;
+				case 'm':
+					generic_gain *= 2;
+					break;
+				case 'n':
+					generic_gain *= 0.5f;
+					break;
+				case 'v':
+					generic_n += PI/6;
+					break;
+				case 'b':
+					generic_n -= PI/6;
+					break;
 
 				default:
 					ch='.';
@@ -933,18 +1022,24 @@ int main(void)
 			//HAL_ADCEx_InjectedPollForConversion (&hadc1, 1); //this command is not necessary to get values - it was in for a long time
 
 			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
-			uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
-			uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3); //last number refers to rank
-			uint32_t val_M0_TEMP = HAL_ADCEx_InjectedGetValue (&hadc1, 4);
-
+//			uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
+//			uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3); //last number refers to rank
+//			uint32_t val_M0_TEMP = HAL_ADCEx_InjectedGetValue (&hadc1, 4);
+//
 			uint32_t val_SO1 = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
-			uint32_t val_BSENSE = HAL_ADCEx_InjectedGetValue (&hadc2, 2);
-			uint32_t val_STRAIN1 = HAL_ADCEx_InjectedGetValue (&hadc2, 3);
-			uint32_t val_TEMP = HAL_ADCEx_InjectedGetValue (&hadc2, 4);
-			uint32_t val_VBUS = HAL_ADCEx_InjectedGetValue (&hadc2, 5); //TODO this value is not read out correctly - always comes as 0
-
+//			uint32_t val_BSENSE = HAL_ADCEx_InjectedGetValue (&hadc2, 2);
+//			uint32_t val_STRAIN1 = HAL_ADCEx_InjectedGetValue (&hadc2, 3);
+//			uint32_t val_TEMP = HAL_ADCEx_InjectedGetValue (&hadc2, 4);
+//			uint32_t val_VBUS = HAL_ADCEx_InjectedGetValue (&hadc2, 5); //TODO this value is not read out correctly - always comes as 0
+//
 			uint32_t val_SO2 = HAL_ADCEx_InjectedGetValue (&hadc3, 1);
-			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
+//			uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
+
+			if (analog_samples_counter == ANALOG_SAMPLES_N){
+				val_STRAIN0 = acc_STRAIN0 >> ANALOG_SAMPLES_BITSHIFT;
+				acc_STRAIN0 = 0;
+				analog_samples_counter = 0;
+			}
 
 //			// --- read angle
 				//uint8_t spi_address_8[2];
@@ -977,9 +1072,19 @@ int main(void)
 
 						sprintf((char*)buf, "tx: %c %4d %4d %4d %4d ", ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3]);
 
-						sprintf((char*)buf_add, " rx:%c %4d %4d %4d %4d %4d", rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent); strcat(buf, buf_add);
+						//sprintf((char*)buf_add, " rx:%c %4d %4d %4d %4d %4d", rx_character, rx_control_0, rx_control_1, rx_mode_0, rx_mode_1, rx_intent); strcat(buf, buf_add);
 
-						sprintf((char*)buf_add, " p0:%4.2f", phase0); strcat(buf, buf_add);
+						//snprintf(buf_add, BUF_ADD_LEN, " p0:%4.2f", phase0);
+						//strcat(buf, buf_add);
+						int pos = strlen(buf);
+						int left  = BUF_LEN - pos;
+						int n;
+#define ADD_VAL(fmt, val)                 \
+	n = snprintf(buf+pos, left, fmt, val);  \
+	pos += n;                               \
+	left -= n;
+						ADD_VAL(" p0:%4.2f", phase0);
+						// snprintf(buf, BUF_LEN, "%s p0:%4.2f", buf, phase0);
 
 						sprintf((char*)buf_add, " ps:%4.2f", phase_shift); strcat(buf, buf_add);
 
@@ -993,21 +1098,37 @@ int main(void)
 
 						sprintf((char*)buf_add, " c:%5d", rotation_counter); strcat(buf, buf_add);
 
-						sprintf((char*)buf_add, " v:%6.2f", av_velocity); strcat(buf, buf_add);
+						sprintf((char*)buf_add, " v:%6.2f", velocity); strcat(buf, buf_add);
 
-						sprintf((char*)buf_add, " s:%4.3f", stiffness); strcat(buf, buf_add);
+						sprintf((char*)buf_add, " p:%6.2f", p); strcat(buf, buf_add);
 
-						sprintf((char*)buf_add, " h:%4.3f", amp_harmonic); strcat(buf, buf_add);
+						sprintf((char*)buf_add, " FOC:%4.2f", FOC_phase_shift); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " gg:%6.3f", generic_gain); strcat(buf, buf_add);
+						sprintf((char*)buf_add, " gn:%6.3f", generic_n); strcat(buf, buf_add);
+
+						sprintf((char*)buf_add, " dcl:%6.2f qcl:%6.2f", direct_component_lp, quadrature_component_lp); strcat(buf, buf_add);
+
+
+
+						sprintf((char*)buf_add, " dc:%6.2f qc:%6.2f", direct_component, quadrature_component); strcat(buf, buf_add);
+
+
+						sprintf((char*)buf_add, " a:%6.2f b:%6.2f", a, b); strcat(buf, buf_add);
+
+						//sprintf((char*)buf_add, " s:%4.3f", stiffness); strcat(buf, buf_add);
+
+						//sprintf((char*)buf_add, " h:%4.3f", amp_harmonic); strcat(buf, buf_add);
 
 						//sprintf((char*)buf_add, " d:%2d", direction); strcat(buf, buf_add);
 
 						if (CONVERT){
-							float SO0 = ((float)val_I - 2040.0) * 0.134; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
-							float SO1 = ((float)val_SO1 - 2002.0) * 0.189; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
-							float SO2 = ((float)val_SO2 - 2002.0) * 0.189; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+							float SO0 = ((float)val_I - 2040.0f) * 0.134f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+							float SO1 = ((float)val_SO1 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
+							float SO2 = ((float)val_SO2 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
 							sprintf((char*)buf_add, " I:%5.2fA SO1:%5.2fA SO2:%5.2fA", SO0, SO1, SO2); strcat(buf, buf_add);
 
-							float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
+							float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5f); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
 							sprintf((char*)buf_add, " It:%5.2fA", I_tot); strcat(buf, buf_add);
 						}
 						else{
@@ -1017,17 +1138,23 @@ int main(void)
 						sprintf((char*)buf_add, " A:%4d B:%4d C:%4d", val_ASENSE, val_BSENSE, val_CSENSE); strcat(buf, buf_add);
 
 						if (CONVERT){
-							float STRAIN0 = ((float)val_STRAIN0 - 2235.0) * 1.678; // 3.3/4095/0.00048[gain see page 114] = 1.678
-							float STRAIN1 = ((float)val_STRAIN1 - 2235.0) * 1.678;
+							float STRAIN0 = ((float)val_STRAIN0 - 2235.0f) * 1.678f; // 3.3/4095/0.00048[gain see page 114] = 1.678
+							float STRAIN1 = ((float)val_STRAIN1 - 2235.0f) * 1.678f;
 							sprintf((char*)buf_add, " S0:%5.1fN S1:%4dN", STRAIN0, val_STRAIN1); strcat(buf, buf_add);
 						}
 						else{
-							sprintf((char*)buf_add, " S0:%4d S1:%4d", val_STRAIN0, val_STRAIN1); strcat(buf, buf_add);
+							//sprintf((char*)buf_add, " S0:%4d S1:%4d", val_STRAIN0, val_STRAIN1); strcat(buf, buf_add);
 						}
 
-						sprintf((char*)buf_add, " TM:%4d TC:%4d V:%4d", val_TEMP, val_M0_TEMP, val_VBUS); strcat(buf, buf_add);
+						//sprintf((char*)buf_add, " S0s:%4d", val_STRAIN0); strcat(buf, buf_add);
 
-						//sprintf((char*)buf_add, " ADC: %4d %4d %4d %4d %4d", adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]); strcat(buf, buf_add);
+
+						////sprintf((char*)buf_add, " TM:%4d TC:%4d V:%4d", val_TEMP, val_M0_TEMP, val_VBUS); strcat(buf, buf_add);
+						//sprintf((char*)buf_add, " TM:%4d TC:%4d", val_TEMP, val_M0_TEMP); strcat(buf, buf_add);
+
+						//sprintf((char*)buf_add, " ADC1: %4d %4d %4d %4d %4d %4d %4d %4d", adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4], adc1_buf[5], adc1_buf[6], adc1_buf[7]); strcat(buf, buf_add);
+						//sprintf((char*)buf_add, " ADC2: %4d %4d %4d %4d %4d %4d %4d %4d", adc2_buf[0], adc2_buf[1], adc2_buf[2], adc2_buf[3], adc2_buf[4], adc2_buf[5], adc2_buf[6], adc2_buf[7]); strcat(buf, buf_add);
+						//sprintf((char*)buf_add, " ADC3: %4d %4d %4d %4d %4d %4d %4d %4d", adc3_buf[0], adc3_buf[1], adc3_buf[2], adc3_buf[3], adc3_buf[4], adc3_buf[5], adc3_buf[6], adc3_buf[7]); strcat(buf, buf_add);
 
 						if (val_TEMP > 1900){
 							sprintf((char*)buf_add, "* >50C on ESC"); strcat(buf, buf_add);
@@ -1170,7 +1297,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 4;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -1190,6 +1317,30 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = 2;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 4;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1266,7 +1417,7 @@ static void MX_ADC2_Init(void)
   hadc2.Init.ContinuousConvMode = DISABLE;
   hadc2.Init.DiscontinuousConvMode = DISABLE;
   hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc2.Init.NbrOfConversion = 5;
+  hadc2.Init.NbrOfConversion = 4;
   hadc2.Init.DMAContinuousRequests = ENABLE;
   hadc2.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc2) != HAL_OK)
@@ -1302,14 +1453,6 @@ static void MX_ADC2_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = 4;
-  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-  */
-  sConfig.Channel = ADC_CHANNEL_8;
-  sConfig.Rank = 5;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1384,7 +1527,7 @@ static void MX_ADC3_Init(void)
   hadc3.Init.ContinuousConvMode = DISABLE;
   hadc3.Init.DiscontinuousConvMode = DISABLE;
   hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc3.Init.NbrOfConversion = 5;
+  hadc3.Init.NbrOfConversion = 4;
   hadc3.Init.DMAContinuousRequests = ENABLE;
   hadc3.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc3) != HAL_OK)
@@ -1420,14 +1563,6 @@ static void MX_ADC3_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_13;
   sConfig.Rank = 4;
-  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-  */
-  sConfig.Channel = ADC_CHANNEL_3;
-  sConfig.Rank = 5;
   if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -2329,9 +2464,8 @@ void set_pwm_off(void){
 void step_through_pole_angles(void){
 	normal_operation_enabled = false;
 	set_pwm_off();
-	//run_motor = 0;
 	HAL_Delay(100);
-	uint16_t step_through_amp = 5 * PWM_1PERCENT;
+	uint32_t step_through_amp = 5 * PWM_1PERCENT;
 	for (uint8_t pole = 0; pole < N_POLES ; pole++){
 		for (uint8_t ABC = 0; ABC < N_PHASES ; ABC++){
 			set_pwm_off();
@@ -2382,7 +2516,7 @@ void step_through_pole_angles(void){
 	set_pwm_off();
 	normal_operation_enabled = true;
 
-	float sum = 0;
+	float sum = 0.0f;
 	float enc_steps_per_A2B = (float)ENC_STEPS / (float)(N_POLES * N_PHASES);
 	float enc_steps_per_A2A = (float)ENC_STEPS / (float)N_POLES;
 	for (uint8_t i = 0; i < N_POLES * N_PHASES ; i++){
@@ -2422,8 +2556,8 @@ void explore_limits(void){
 	HAL_Delay(100);
 	for (int8_t dir=-1;dir<2; dir+=2){
 		HAL_Delay(500);
-		amp= dir * 0.1;
-		for (int16_t i = 0; i<50; i++){
+		amp= dir * 0.1f;
+		for (int32_t i = 0; i<50; i++){
 			HAL_Delay(100);
 			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
 			if (val_I > 2100 || val_I < 1980){
@@ -2442,7 +2576,7 @@ void explore_limits(void){
 		}
 	}
 
-	amp = 0.01;
+	amp = 0.01f;
 }
 
 
@@ -2477,7 +2611,7 @@ void myDelay(void){
 	HAL_Delay(1);
 }
 
-void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
+void playSound(uint32_t periode, uint32_t volume, uint32_t cycles){
 	// TODO disable interrupt for the duration of sound
 	//HAL_NVIC_DisableIRQ(TIM8_UP_TIM13_IRQn);
 	//HAL_Delay(1000);
@@ -2485,7 +2619,7 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 	set_pwm_off();
 	HAL_Delay(10);
 
-	for (uint16_t i=0; i<cycles; i++){
+	for (uint32_t i=0; i<cycles; i++){
 		TIM1->CCR1 = 0; //takes<150ns
 		TIM1->CCR2 = volume; //takes<150ns
 		HAL_Delay(periode);
@@ -2512,13 +2646,26 @@ void playSound(uint16_t periode, uint16_t volume, uint16_t cycles){
 void calc_lookup(float *lookup){
 	// TODO plug in a higher order harmonic and see if system gets more energy efficient or more silent
 	for (int i=0; i<210; i++){
-	    //lookup[i] = cos((float)i/100.0) + cos((float)i/100.0-1.047);
+			// --- vanilla
+	    //lookup[i] = cos((float)i/100.0f) + cos((float)i/100.0f-1.047f);
 
 		  // --- harmonic
-	    //lookup[i] = cos((float)i/100.0)       + amp_harmonic * cos( (float)i/100.0       * 3.0f)    +  cos((float)i/100.0-1.047) + amp_harmonic * cos(((float)i/100.0-1.047)* 3.0f) ;// the harmonic tends to fully cancel out
+	    //lookup[i] = cos((float)i/100.0f)       + amp_harmonic * cos( (float)i/100.0f       * 3.0f)    +  cos((float)i/100.0f-1.047f) + amp_harmonic * cos(((float)i/100.0f-1.047f)* 3.0f) ;// the harmonic tends to fully cancel out
 
 			// --- power law
-			lookup[i] = pow( cos((float)i/100.0) + cos((float)i/100.0-1.047),amp_harmonic)/ pow(amp_harmonic,0.5); //looks like 1.0 is already best in terms of overtones
+			lookup[i] = pow( cos((float)i/100.0f) + cos((float)i/100.0f-1.047f),amp_harmonic)/ pow(amp_harmonic,0.5f); //looks like 1.0 is already best in terms of overtones
+	}
+}
+
+void calc_sin_lookup(float *sin_lookup){
+	for (int i=0; i<628; i++){
+			sin_lookup[i] = sin((float)i/100.0f);
+	}
+}
+
+void calc_cos_lookup(float *cos_lookup){
+	for (int i=0; i<628; i++){
+			cos_lookup[i] = cos((float)i/100.0f);
 	}
 }
 
@@ -2541,20 +2688,37 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 //}
 
 
-// --- 1ms heartbeat of the microcontroller
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
+// I find 80 at 25V this would be 192kV arrg
+void calc_v(void){
+	int16_t tim2_counter = TIM2->CNT; //has prescalor of 8-1 ==> 10.5MHz ==> will always be around 10500 for heartbeat 1ms
+	TIM2->CNT = 0;
 
-	// shift tx here to offload the can interrupt
+	int16_t EncDiff = EncVal-last_EncVal_v; // will be 200 for 100Hz rotation or 2 for 1Hz rotation
+	last_EncVal_v = EncVal;
 
-	if (TIM5->CNT - time_of_last_pwm_update  > 95){ //100 time time_step = heartbeat
-		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-		update_pwm();
+	if (EncDiff > ENC_STEPS_HALF){ // if jump is more than a half rotation it's most likely the 0 crossing
+		EncDiff -= ENC_STEPS;
+	}
+	else if (EncDiff < -ENC_STEPS_HALF){
+		EncDiff += ENC_STEPS;
 	}
 
+	velocity = (float)(EncDiff) / (float)tim2_counter; //[steps/counts]
+	velocity *= 10500000/ENC_STEPS; // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
+	av_velocity = 0.95f * av_velocity + 0.05f * velocity;
+
+}
+
+// -----------------------------------------------------------
+// --- HEARTBEAT (1ms)  of the microcontroller
+// -----------------------------------------------------------
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
+
+	calc_v();
 
 
 	if (mode_of_control == 1){
-		float t = (float)((TIM5->CNT - last_tim5_cnt) / 100) / 1000.0;
+		float t = (float)((TIM5->CNT - last_tim5_cnt) / 100) / 1000.0f;
 
 		int32_t desired_EncVal = pos_offset + pos_amp * sin(6.28f * pos_freq * t);
 
@@ -2569,9 +2733,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 
 
 		int32_t Enc_Val_total = EncVal + rotation_counter * ENC_STEPS;
-		float raw_amp = (float)(Enc_Val_total - desired_EncVal) * P_gain; //oscillates for P_gain > 0.005
+		float raw_amp = (float)(Enc_Val_total - desired_EncVal) * P_gain; //oscillates for P_gain > 0.005f
 		float raw_amp_check = raw_amp;
-//		if (raw_amp < 0.0){
+//		if (raw_amp < 0.0f){
 //			raw_amp = -raw_amp;
 //			direction = -1;
 //		}
@@ -2588,7 +2752,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 
 		if (buf_msgs[0] == '\0'){
 			sprintf((char*)buf_msg, "[HEART] raw_a: %d %d %d Enc_tot: %d a: %d f: %d lim: %d off: %d g: %d\r\n",
-					(int)((float)(Enc_Val_total - desired_EncVal) * 0.0005*1000),
+					(int)((float)(Enc_Val_total - desired_EncVal) * 0.0005f*1000.0f),
 					(int)(raw_amp*1000),
 					(int)(raw_amp_check*1000),
 					(int)Enc_Val_total,
@@ -2605,8 +2769,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
 	}
 
 
+}
 
 
+//called every second step of the quadrature encoder
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){ // see https://community.st.com/s/question/0D50X00009XkWUpSAN/encoder-mode-and-rotary-encoder
+
+	if(htim->Instance == TIM8){
+	}
 }
 
 // --- Callback when Encoder fires the I at zero point
@@ -2643,6 +2813,764 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	}
 }
 
+
+
+// -----------------------------------------------------------
+// MAIN UPDATE STEP interrupt triggered by timer 1 channel 4 towards end of each pwm cycle
+// -----------------------------------------------------------
+void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim){
+	if (htim != &htim1){
+		return;
+	}
+
+#if DB_TIMING
+	DB1H;
+#endif
+
+	timing_party();
+
+	// --- get current encoder position
+	last_EncVal = EncVal;
+	EncVal = TIM8->CNT;//both lines 200ns
+
+	// --- determine whether 0 crossing happened and adjust rotation_counter accordingly
+	if (EncVal - last_EncVal > ENC_STEPS_HALF) {
+		rotation_counter--;
+	}
+	else if (last_EncVal - EncVal > ENC_STEPS_HALF){
+		rotation_counter++;
+	}// both statements 300ns
+
+	// --- accumulate analog readings till we have enough samples which is a flag for the heart beat (= all MCU internal control loops)
+	if (analog_samples_counter < ANALOG_SAMPLES_N ){  // TODO: if n_samples >= 32
+		acc_STRAIN0 += HAL_ADCEx_InjectedGetValue (&hadc1, 3);
+		analog_samples_counter ++;
+	}//200ns when not entering presumably
+
+	// --- calculate the phase with respect to a pole cycle in 100x int
+	pole_phase_int = (int)((PI2 * N_POLES / ENC_STEPS * (float) EncVal - phase0 + PI2) * 100.0f) % 628 ; //400ns when consolidated in one line
+
+
+
+#if FOC_ALG
+
+	register int32_t A = HAL_ADCEx_InjectedGetValue (&hadc1, 1);//500ns
+	register int32_t B = HAL_ADCEx_InjectedGetValue (&hadc2, 1);//500ns
+	register int32_t C = HAL_ADCEx_InjectedGetValue (&hadc3, 1);//500ns
+
+
+//	register float mean_lp = 0.00001f;
+//      A_mean = (1-mean_lp) * A_mean + mean_lp * A;
+//			B_mean = (1-mean_lp) * B_mean + mean_lp * B;
+//	A_mean = 2040.0f;
+//	B_mean = 2005.0f;
+//	C_mean = 2005.0f;
+
+	// --- Park transform
+	a = 0.7f * ((float)A-A_mean);
+	b = INV_SQRT_3 * (a + 2.0f * ((float)B-B_mean)); //200ns thanks to precalc of SQRT
+
+	// -- Clark transform
+	direct_component = a * cos_lookup[pole_phase_int] + b * sin_lookup[pole_phase_int];
+	quadrature_component = -a * sin_lookup[pole_phase_int] + b * cos_lookup[pole_phase_int]; //300ns
+
+	// --- low pass filter
+	register float lp = 0.001f;
+	direct_component_lp = (1-lp) * direct_component_lp + lp * direct_component;
+	quadrature_component_lp = (1-lp) * quadrature_component_lp + lp * quadrature_component;//with register 240 without register 380ns for the 3 lines
+
+
+	static float direct_component_lp_integral = 0.0f;
+	direct_component_lp_integral += direct_component_lp;//150ns for 2lines
+
+	// --- PI controller
+	FOC_phase_shift = 0.005f* generic_gain * direct_component_lp + 0.00001f  * direct_component_lp_integral; //220ns//starts oscillating at I = 0.00008f and alternatively at P = 0.03f
+
+
+	if (FOC_phase_shift > FOC_PHASE_LIM){
+		FOC_phase_shift = FOC_PHASE_LIM;
+	}
+	else if (FOC_phase_shift < -FOC_PHASE_LIM){
+		FOC_phase_shift = -FOC_PHASE_LIM;
+	}//350ns for checks
+
+	if (abs(av_velocity) < 1.0f){
+		FOC_phase_shift = 0.0f;
+		direct_component_lp_integral = 0.0f;
+	}//220ns
+
+
+#else if //empirical mean
+	FOC_phase_shift = 0.1f;
+#endif
+
+
+#if DB_TIMING
+	DB1L;
+#endif
+
+
+	update_pwm();
+
+}
+
+
+
+
+// -----------------------------------------------------------
+// called from MAIN UPDATE STEP to calc and write pwm values to FETdriver
+// -----------------------------------------------------------
+void update_pwm(void){
+
+#if DB_TIMING
+	DB1H;
+#endif
+
+	register int32_t field_phase_int;
+	register float u0 = 0.5773f; //0.5f * 2.0f / 1.73205f;// maximal possible U on one coil thanks to wankel //takes<200ns
+	register float modified_amp = amp + stiffness * av_velocity;// * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
+
+	if (modified_amp > AMP_LIMIT){
+		modified_amp = AMP_LIMIT;
+	}
+	if (modified_amp < -AMP_LIMIT){
+		modified_amp = -AMP_LIMIT;
+	}
+
+	if (modified_amp > 0){
+		field_phase_int = pole_phase_int - (int)((phase_shift + FOC_phase_shift) * 100.0f);
+		u0 *= modified_amp;  //takes<200ns
+	}
+	else {
+		field_phase_int = pole_phase_int + (int)((phase_shift + FOC_phase_shift) * 100.0f);
+		u0 *= -modified_amp;  //takes<200ns
+	}
+
+	if (!sw_enable_pwm){
+		u0 = 0;
+	}
+
+	if (field_phase_int < 0) {
+		field_phase_int += 628;
+	}
+	else if (field_phase_int >= 628) {
+		field_phase_int -= 628;
+	}//150ns
+
+	register float uA = 0;
+	register float uB = 0;
+	register float uC = 0;
+
+	if (control_method != freerun ){
+		if (control_method == sinusoidal ){
+
+			if  (field_phase_int < 210)	{
+				uA = lookup[field_phase_int]; //took<32000ns - with lookup implement it's just 2000ns
+				uB = lookup[210 - 1 - field_phase_int]; //
+				uC = 0;
+			}
+		 else if  (field_phase_int < 420){	 //210...419
+				uA = 0;
+				uB = lookup[field_phase_int - 210];
+				uC = lookup[420 - 1 - field_phase_int];
+		 }
+		 else	{  //420...629
+				uA = lookup[630 - 1 - field_phase_int];
+				uB = 0;
+				uC = lookup[field_phase_int - 420];
+			}
+		}//400ns
+
+		else if (control_method == trapezoidal){
+			if  (field_phase_int < 105-52)	{
+				uA = 1;
+				uB = 0;
+				uC = 0;
+			}
+			else if  (field_phase_int < 210-52)	{
+				uA = 1;
+				uB = 1;
+				uC = 0;
+			}
+			else if  (field_phase_int < 315-52)	{
+				uA = 0;
+				uB = 1;
+				uC = 0;
+			}
+			else if  (field_phase_int < 420-52)	{
+				uA = 0;
+				uB = 1;
+				uC = 1;
+			}
+			else if  (field_phase_int < 525-52)	{
+				uA = 0;
+				uB = 0;
+				uC = 1;
+			}
+			else if  (field_phase_int < 630-52)	{
+				uA = 1;
+				uB = 0;
+				uC = 1;
+			}
+			else 	{ //same as first half phase
+				uA = 1;
+				uB = 0;
+				uC = 0;
+			}
+		}
+
+		pwmA = (uint16_t) (PWM_F * u0 * uA); //180ns
+		pwmB = (uint16_t) (PWM_F * u0 * uB); //180ns
+		pwmC = (uint16_t) (PWM_F * u0 * uC); //180ns
+
+		// --- send out PWM pulses 0...2048
+		if (normal_operation_enabled){
+			TIM1->CCR1 = pwmA; //takes<150ns
+			if (INVERT){
+				TIM1->CCR3 = pwmB; //takes<150ns
+				TIM1->CCR2 = pwmC; //takes<150ns
+			}
+			else {
+				TIM1->CCR2 = pwmB; //takes<150ns
+				TIM1->CCR3 = pwmC; //takes<150ns
+			}
+
+		}//300ns
+	}
+
+	else{ // NOTE this mode is still experimental
+		if  (field_phase_int < 105)	{
+			uA = 1;
+			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			TIM1->CCR1 = pwmA; //takes<150ns
+//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
+//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
+//
+//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC2CE);
+//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC2CE);
+//			SET_BIT(TIM1->CCMR2, TIM_CCMR2_OC3CE);
+//			CLEAR_BIT(TIM1->CCMR2, TIM_CCMR2_OC3CE);
+
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+		else if  (field_phase_int < 210)	{
+			uB = 1;
+			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
+			TIM1->CCR2 = pwmB; //takes<150ns
+
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+		else if  (field_phase_int < 315)	{
+			uB = 1;
+			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
+			TIM1->CCR2 = pwmB; //takes<150ns
+
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+		else if  (field_phase_int < 420)	{
+			uC = 1;
+			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+		}
+		else if  (field_phase_int < 525)	{
+			uC = 1;
+			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+		}
+		else 	{
+			uA = 1;
+			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			TIM1->CCR1 = pwmA; //takes<150ns
+
+			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
+			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
+		}
+
+	}
+
+#if DB_TIMING
+	DB1L;
+#endif
+
+}
+
+// -----------------------------------------------------------
+// Just a helpful util to check processing times for different operations
+// -----------------------------------------------------------
+void timing_party(){
+	DB1L;
+	DB1H;
+	DB1L;
+	DB1H;
+	DB1L;
+	DB1H;
+	DB1L;
+	DB1H;
+
+	if (0){
+
+		DB1L;//40ns
+		int t11 = 2345;//10 (subtract 40 from the 60 below and devide by 2 because we do 2 operations)
+		int t12 = 1234;//10
+		DB1H;//60ns
+		int t13 = t11+t12;//40
+
+		DB1L;//80ns
+		int t21 = 2345;//0
+		int t22 = 1234;//0
+		DB1H;//40ns
+		int t23 = t21/t22;//60
+
+		DB1L;//100
+		float t31 = 2345;//20
+		float t32 = 1234;//20
+		DB1H;//80
+		float t33 = t31+t32;//160
+
+		DB1L;//200
+		float t41 = 2345;//20
+		float t42 = 1234;//20
+		DB1H;//80
+		float t43 = t41/t42;//110
+
+		DB1L;//150
+		float t51 = 2345;//20
+		int t52 = 1234;//10
+		DB1H;//70
+		float t53 = t51/(float)t52;//140
+
+		DB1L;//180
+		DB1H;
+		DB1L;
+		DB1H;
+
+
+
+		DB1L;
+		int8_t t71 = 2345;//10
+		int8_t t72 = 1234;//10
+		DB1H;//50
+		int8_t t73 = t71+t72;//40
+
+		DB1L;//80
+		int16_t t61 = 2345;//10
+		int16_t t62 = 1234;//
+		DB1H;//
+		int16_t t63 = t61+t62;//40
+
+
+		DB1L;
+		int32_t t81 = 2345;//10
+		int32_t t82 = 1234;//
+		DB1H;//
+		int32_t t83 = t81+t82;//40
+
+
+		DB1L;
+		int64_t t91 = 2345;//30
+		int64_t t92 = 1234;//
+		DB1H;//100
+		int64_t t93 = t91+t92;//60 <<<<<<<<<<<< all int have same speed but 64 is much slower
+
+
+		DB1L;//100
+		DB1H;
+		DB1L;
+		DB1H;
+
+		DB1L;
+		double r91 = 2345;//70
+		double r92 = 1234;//70
+		DB1H;//180
+		double r93 = r91+r92;//860
+
+		DB1L;//900
+		float r81 = 2345;//20
+		//int t52 = 1234;//
+		DB1H;//60
+		float r83 = 3.1234 * r81;//950 <<<<<<<<<<<<<<< super slow
+
+		DB1L;//1000
+		float r71 = 2345;//
+		//int t52 = 1234;//
+		DB1H;//60
+		float r73 = 3.1234f * r71; // 80 <<<<<<<<<<<< super important to put f behind floating point number
+
+		DB1L;//120
+		DB1H;
+		DB1L;
+		DB1H;
+
+		DB1L;
+		int e11 = 123;
+		int e12 = 234;
+		int e13 =0;
+		DB1H;//140
+		e13 = e11 + e12;
+		e13 = e13 + 345;
+		DB1L;//100
+		e13 = e11 + e12 + 345;// <<<<<<one line is faster than 2 lines as above !!!
+		DB1H;//80
+		e13 = e11 + e12 + 345 + 456 + 567; //  <<<<<NO additional time for writing out all the numbers !!!!!
+		DB1L;//80
+		e13 = e11 + e12;
+		e13 += 345; //+= just as = _+
+		DB1H;//110
+		e13 = e11 + e12;//40
+		e13 = e13 + PWM_1PERCENT;//30
+		DB1L;//110
+		e13 = e11 + e12; //40
+		e13 = e13 + skip_update; //100 <<<<<<<<getting a variable takes much longer than having define !!!!
+
+		DB1L;//180
+		DB1H;
+		DB1L;
+		DB1H;
+	}
+
+	if (0){
+
+		float c;
+		DB1L;
+		c = cos(0.1f);
+		DB1H;//60
+		c = cos(0.1);
+		DB1L;//60
+		c = sqrt(0.1f);
+		DB1H;//60
+		c = pow(0.1f,0.5f);
+		DB1L;//60
+		c = pow(0.1f,0.5);
+		DB1H;//60
+		c = sin_lookup[4];
+		DB1L;//60
+		//c = cos(c);
+		DB1H;//10000ns >>>>>>>>>>>>>>> Doing calc on variable as opposed to fix takes forever
+		c = sin_lookup[(int)(c*100)];
+		DB1L;//300ns
+		c = sin_lookup[(int)(c*100.0)];
+		DB1H;//1100ns
+		c = sin_lookup[(int)(c*100.0f)];
+		DB1L;//180ns
+
+		DB1H;
+
+		DB1L;//60
+		DB1H;
+		DB1L;
+		DB1H;
+	}
+
+	if (0){
+		int ii;
+		float ff;
+
+		DB1L;
+		ii = 1;
+		ii = 2;
+		ii = 3;//10
+		DB1H;//80
+
+		DB1L;
+		for (int i=0; i<3; i++){
+			ii = i;
+		}
+		DB1H;//450     //<<<<<<<<<<<<<<< What is happening here??? loop takes for ever
+
+		DB1L;
+		for (float i=0.0f; i<1.0f; i+=0.3f){
+			ff = i;
+		}
+		DB1H;//800
+
+	//	DB1L;
+	//	for (float i=0.0f; i<1.0f; i+=0.3f){
+	//		ff = sin(i);
+	//	}
+	//	DB1H;
+
+		DB1L;
+		for (int i=0; i<1; i++){
+			ff = sin(0.1f);
+		}
+		DB1H;//400 in next measurement only 250ns --- how can this be faster than the assignment loop - maybe because we always assign same.
+
+
+
+		DB1L;
+		for (int i=0; i<3; i++){
+			ff = sin_lookup[i];
+		}
+		DB1H;//550  <<<<<<<<<< Lookup is slower than calc --- double check because we do only same calc up there
+
+		DB1L;
+		for (int i=0; i<1; i++){
+			ff = sin(0.1f*(float)i);
+		}
+		DB1H;//2000ns !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! for one calc only
+
+		DB1L;
+		DB1H;
+		DB1L;
+		DB1H;
+	}
+
+
+	if (0) {
+
+		DB1L;
+		float r = 2345;//30
+		float rr = 1234;//30
+		DB1H;//100
+		float rrr = r+rr;//40
+
+		DB1L;//80
+		register float r1 = 2345;//0
+		register float rr1 = 1234;//0
+		DB1H;//40
+		register float rrr1 = r1+rr1;//0 <<<<<<<<<<<<,OK this is not resolvable anymore
+
+		DB1L;//40
+		float r2 = 2345;//20
+		float rr2 = 1234;//20
+		DB1H;//100
+		float rrr2 = r2+rr2;//40
+
+		DB1L;//80
+		DB1H;
+		DB1L;
+		DB1H;
+
+	}
+
+	if (1) {
+
+		DB1L;
+		bool v = true;//
+		int ff = 1;
+		DB1H;//100
+		if (v){
+			int ff = 0;
+		}
+
+		DB1L;//80
+		int vv = 1;
+		int fff = 1;
+		DB1H;//40
+		fff *= vv;//0 <<<<<<<<<<<<,OK this is not resolvable anymore
+
+
+
+		DB1L;//80
+		DB1H;
+		DB1L;
+		DB1H;
+
+	}
+
+	// --- MORE LEARINGS
+	// - avoid fmod - 4000ns
+
+	DB1L;
+	DB1H;
+	DB1L;
+	DB1H;
+
+	DB1L;
+	DB1H;
+	DB1L;
+	DB1H;
+
+
+
+}
+
+// -----------------------------------------------------------
+// --- USEFUL LINES
+// -----------------------------------------------------------
+
+	// --- read analog
+//		uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//					uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
+//					uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3); //last number refers to rank
+//					uint32_t val_M0_TEMP = HAL_ADCEx_InjectedGetValue (&hadc1, 4);
+//
+//					uint32_t val_SO1 = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
+//					uint32_t val_BSENSE = HAL_ADCEx_InjectedGetValue (&hadc2, 2);
+//					uint32_t val_STRAIN1 = HAL_ADCEx_InjectedGetValue (&hadc2, 3);
+//					uint32_t val_TEMP = HAL_ADCEx_InjectedGetValue (&hadc2, 4);
+//					uint32_t val_VBUS = HAL_ADCEx_InjectedGetValue (&hadc2, 5); //TODO this value is not read out correctly - always comes as 0
+//
+//					uint32_t val_SO2 = HAL_ADCEx_InjectedGetValue (&hadc3, 1);
+//					uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
+
+// -----------------------------------------------------------
+// --- possible enhancements
+// -----------------------------------------------------------
+//phase_int1000 = EncVal * N_POLES * 1000 /
+
+
+// -----------------------------------------------------------
+//--- OUTTAKES
+// -----------------------------------------------------------
+
+//--mybest but still super slow FOC alg
+//else if (FOC_ALG == 2){ // this method needs to have trigger when we get to next cycle and needs averaging over a few cycles
+//			static float current_phase;
+//			static float last_phase;
+//			last_phase = current_phase;
+//			current_phase = (float) EncVal * 0.0031415f * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
+//			current_phase -= phase0;
+//			current_phase += 6.28f;
+//			current_phase = fmod(current_phase, 6.28f);
+//
+//			int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//
+//
+//			if (last_phase - current_phase > 1 || last_phase - current_phase < -1){
+//				direct_component = direct_component_sum/component_counter;
+//				quadrature_component = quadrature_component_sum/component_counter;
+//
+//
+//				float lp = 0.05f;
+//				direct_component_lp = (1-lp) * direct_component_lp + lp * direct_component;
+//				quadrature_component_lp = (1-lp) * quadrature_component_lp + lp * quadrature_component;
+//
+//				static float direct_component_lp_integral = 0.0f;
+//				direct_component_lp_integral += direct_component_lp;
+//
+//				FOC_phase_shift = 0.01f* generic_gain * direct_component_lp + 0.00001f  * direct_component_lp_integral; //starts oscillating at I = 0.00008f and alternatively at P = 0.03f
+//
+//				if (FOC_phase_shift > 0.3f){
+//					FOC_phase_shift = 0.3f;
+//				}
+//				else if (FOC_phase_shift < -0.3f){
+//					FOC_phase_shift = -0.3f;
+//				}
+//
+//				if (abs(av_velocity) < 1){
+//					FOC_phase_shift = 0.0f;
+//					//direct_component_integral = 0.0f;
+//				}
+//
+//				direct_component_sum = 0.0f;
+//				quadrature_component_sum = 0.0f;
+//				component_counter = 0;
+//			}
+//
+//			if (current_phase < 1.571){
+//				direct_component_sum += val_I;
+//				quadrature_component_sum += val_I;
+//			}
+//			else if (current_phase < 3.142){
+//				direct_component_sum -= val_I;
+//				quadrature_component_sum += val_I;
+//			}
+//			else if (current_phase < 4.712){
+//				direct_component_sum -= val_I;
+//				quadrature_component_sum -= val_I;
+//			}
+//			else {
+//				direct_component_sum += val_I;
+//				quadrature_component_sum -= val_I;
+//			}
+//			component_counter++;
+//
+//		}
+
+// --- wrong way of doing FOC
+//if (0){ //it is nonsense to have a exp decay window for an oscillatory motion --- this is why this only worked for super slow lp
+//	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
+//			phase -= phase0;
+//			phase += 6.28;
+//			phase = fmod(phase, 6.28);
+//	int8_t cos_contribution = 0;
+//	int8_t sin_contribution = 0;
+//
+//	if (phase < 1.571){
+//		cos_contribution = +1;
+//		sin_contribution = +1;
+//	}
+//	else if (phase < 3.142){
+//		cos_contribution = -1;
+//		sin_contribution = +1;
+//	}
+//	else if (phase < 4.712){
+//		cos_contribution = -1;
+//		sin_contribution = -1;
+//	}
+//	else {
+//		cos_contribution = +1;
+//		sin_contribution = -1;
+//	}
+//
+//	int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//
+//	//float lp =  1.0f / 40000.0f / 10.0f * av_velocity * (float)N_POLES; //making the 1/e time 10 times the pass of a pole
+//	//float lp =  0.00003f; // for 2Hz
+//	float lp =  0.0003f; // for 2Hz
+//	direct_component = (1-lp) * direct_component + lp * (cos_contribution * val_I);
+//	quadrature_component = (1-lp) * quadrature_component + lp * (sin_contribution * val_I);
+//
+//	static float direct_component_integral = 0.0f;
+//	direct_component_integral += direct_component;
+//
+//	FOC_phase_shift = 0.01f* generic_gain * direct_component + 0.00001f  * direct_component_integral; //starts oscillating at I = 0.00008f and alternatively at P = 0.03f
+//
+//	if (FOC_phase_shift > 0.3f){
+//		FOC_phase_shift = 0.3f;
+//	}
+//	else if (FOC_phase_shift < -0.3f){
+//		FOC_phase_shift = -0.3f;
+//	}
+//
+//	if (av_velocity < 6 && av_velocity > -6){
+//		FOC_phase_shift = 0.0f;
+//		direct_component_integral = 0.0f;
+//	}
+//}
+
+// --- another wrong way of doing FOC
+// --- phase calc
+//		if (val_SO1_buf_index < 72){
+//			val_SO1_buf[val_SO1_buf_index] = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//			val_SO1_buf_index++;
+//		}
+//		if (val_SO1_buf_index == 72){  // some hints that this takes 10mus
+//
+//			int32_t cos_part = 0;
+//			int32_t sin_part = 0;
+//
+//			for (int i=0; i< 72; i++){
+//					if (i<18){
+//						cos_part += val_SO1_buf[i];
+//						sin_part += val_SO1_buf[i];}
+//					else if (i<36){
+//						cos_part -= val_SO1_buf[i];
+//						sin_part += val_SO1_buf[i];}
+//					else if (i<54){
+//						cos_part -= val_SO1_buf[i];
+//						sin_part -= val_SO1_buf[i];}
+//					else{
+//						cos_part += val_SO1_buf[i];
+//						sin_part -= val_SO1_buf[i];}
+//			}
+//			field_amplitude = cos_part*cos_part + sin_part*sin_part;
+//			field_phase_shift = (float) cos_part / (float) sin_part;
+//			field_phase_shift_pihalf = (float) sin_part / (float) cos_part;
+//
+//			val_SO1_buf_index++;
+//		}
+
 //void append_msg((char*)msg, uint8_t n){
 //	if (strlen(buf_msg) + strlen(buf_msgs) < 100){
 //		strncat(buf_msgs, buf_msg, n);
@@ -2666,326 +3594,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 //}}
 
 
-
-
-//this is it
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
-	// see https://community.st.com/s/question/0D50X00009XkWUpSAN/encoder-mode-and-rotary-encoder
-
-	//debug2_out_GPIO_Port->BSRR = debug2_out_Pin; //takes 60ns == 5 clock cycles
-	//debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
-	//HAL_GPIO_TogglePin(debug2_out_GPIO_Port, debug2_out_Pin);
-	if(htim->Instance == TIM8){
-
-		if (skip_update){ //TODO somehow the Callback is triggered at this strange 25% duty cycle so we just look at every second update to get a constant frequency
-			skip_update = 0;
-		}
-		else{
-			skip_update = 1;
-
-			debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-			debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
-
-			last_EncVal = EncVal;
-			EncVal = TIM8->CNT;//takes 200ns
-
-			if (EncVal - last_EncVal > ENC_STEPS_HALF){
-				rotation_counter--;
-			}
-			else if (last_EncVal - EncVal > ENC_STEPS_HALF){
-				rotation_counter++;
-			}
-
-
-
-			// --- phase calc
-
-			if (val_SO1_buf_index < 72){
-				val_SO1_buf[val_SO1_buf_index] = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
-				val_SO1_buf_index++;
-			}
-			if (val_SO1_buf_index == 72){  // some hints that this takes 10mus
-
-				int32_t cos_part = 0;
-				int32_t sin_part = 0;
-
-				for (int i=0; i< 72; i++){
-				    if (i<18){
-				      cos_part += val_SO1_buf[i];
-				      sin_part += val_SO1_buf[i];}
-				    else if (i<36){
-				      cos_part -= val_SO1_buf[i];
-				      sin_part += val_SO1_buf[i];}
-				    else if (i<54){
-				      cos_part -= val_SO1_buf[i];
-				      sin_part -= val_SO1_buf[i];}
-				    else{
-				      cos_part += val_SO1_buf[i];
-				      sin_part -= val_SO1_buf[i];}
-				}
-				field_amplitude = cos_part*cos_part + sin_part*sin_part;
-				field_phase_shift = (float) cos_part / (float) sin_part;
-				field_phase_shift_pihalf = (float) sin_part / (float) cos_part;
-
-				val_SO1_buf_index++;
-			}
-
-
-
-
-
-			if (abs(av_velocity) > 5 &&  skip_update_high_v == 1){
-				skip_update_high_v = 0;
-			}
-			else {
-
-				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-
-
-				GPIOC->BSRR = GPIO_PIN_13; // DEBUG
-
-				skip_update_high_v = 1;
-
-
-
-
-				// --- velocity calculation
-				//tim12_counter = TIM12->CNT;
-				tim12_counter = TIM2->CNT;
-				if (tim12_counter > ENC_STEPS){ // TODO fix the issue that this gets almost never called when velocity is super low.
-					//TIM12->CNT = 0;
-					TIM2->CNT = 0;
-					int EncDiff = EncVal-last_EncVal_v;
-					if (EncDiff > ENC_STEPS_HALF){ // if jump is more than a half rotation it's most likely the 0 crossing
-						EncDiff -= ENC_STEPS;
-					}
-					else if (EncDiff < -1000){
-						EncDiff += ENC_STEPS;
-					}
-					velocity = (float)(EncDiff) / (float)tim12_counter; //[steps/counts]
-					velocity *= 21000000/ENC_STEPS; // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO velocity seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
-					av_velocity = 0.95 * av_velocity + 0.05 * velocity;
-					last_EncVal_v = EncVal;
-				}
-
-				update_pwm();
-
-
-
-
-				GPIOC->BSRR = GPIO_PIN_13  << 16U ; // DEBUG
-			}
-		}
-	}
-
-
-	//counterISR++;
-
-}
-
-void update_pwm(void){
-
-	//dtime_since_last_pwm_update = TIM5->CNT - time_of_last_pwm_update;
-	time_of_last_pwm_update = TIM5->CNT;
-
-	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
-	phase -= phase0;
-	//phase = -phase;
-
-	float u0 = 0.5773; //0.5 * 2.0 / 1.73205;// maximal possible U on one coil thanks to wankel //takes<200ns
-	float modified_amp = amp + stiffness * av_velocity;// * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
-	//u0 *= amp;  //takes<200ns
-	if (modified_amp > AMP_LIMIT){
-		modified_amp = AMP_LIMIT;
-	}
-	if (modified_amp < -AMP_LIMIT){
-		modified_amp = -AMP_LIMIT;
-	}
-
-
-
-	if (modified_amp > 0){
-		phase -= phase_shift;  //takes<200ns
-		u0 *= modified_amp;  //takes<200ns
-	}
-	else {
-		phase += phase_shift;
-		u0 *= -modified_amp;  //takes<200ns
-	}
-	u0 *= run_motor;  //takes<200ns
-
+//void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 //
-
-
-
-	phase *= 100;
-	int_phase = (int) phase;
-	int_phase = int_phase % 628;
-	if (int_phase < 0) {
-		int_phase += 628;
-	}
-
-	float uA = 0;
-	float uB = 0;
-	float uC = 0;
-
-	if (wave_mode < 2 ){
-		if (wave_mode == 0 ){
-		//
-		//    uA = lookup[1]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-		//    			uB = lookup[2]; // takes 3mus
-		//    			uC = 0;
-
-			// ---- lookup  this optimized routine brings roundtrip down to 5mus
-
-			if  (int_phase < 210)	{ //0...209
-				uA = lookup[int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-				uB = lookup[210 - 1 - int_phase]; // takes 3mus
-				uC = 0;
-			}
-		 else if  (int_phase < 420){	 //210...419
-				uA = 0; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-				uB = lookup[int_phase - 210]; // takes 3mus
-				uC = lookup[420 - 1 - int_phase];
-		 }
-		 else	{  //420...629
-				uA = lookup[630 - 1 - int_phase]; //takes<32000ns !!!!!!!!!!!!!! with the fast implement it's just 2000ns !!!!!
-				uB = 0; // takes 3mus
-				uC = lookup[int_phase - 420];
-			}
-		}
-
-		else if (wave_mode == 1){
-			if  (int_phase < 105-52)	{
-				uA = 1;
-				uB = 0;
-				uC = 0;
-			}
-			else if  (int_phase < 210-52)	{
-				uA = 1;
-				uB = 1;
-				uC = 0;
-			}
-			else if  (int_phase < 315-52)	{
-				uA = 0;
-				uB = 1;
-				uC = 0;
-			}
-			else if  (int_phase < 420-52)	{
-				uA = 0;
-				uB = 1;
-				uC = 1;
-			}
-			else if  (int_phase < 525-52)	{
-				uA = 0;
-				uB = 0;
-				uC = 1;
-			}
-			else if  (int_phase < 630-52)	{
-				uA = 1;
-				uB = 0;
-				uC = 1;
-			}
-			else 	{ //same as first half phase
-				uA = 1;
-				uB = 0;
-				uC = 0;
-			}
-		}
-		pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
-		pwmB = (uint16_t) (pwm * u0 * uB); //takes<200ns
-		pwmC = (uint16_t) (pwm * u0 * uC); //takes<200ns
-
-		// ---- end lookup
-
-		debug1_out_GPIO_Port->BSRR = (uint32_t)debug1_out_Pin << 16U;
-
-		// --- MOTOR DRIVER ----------------------------------------------------
-		// --- PWM pulses 0...2048
-		if (normal_operation_enabled){
-			TIM1->CCR1 = pwmA; //takes<150ns
-			if (INVERT){
-				TIM1->CCR3 = pwmB; //takes<150ns
-				TIM1->CCR2 = pwmC; //takes<150ns
-			}
-			else {
-				TIM1->CCR2 = pwmB; //takes<150ns
-				TIM1->CCR3 = pwmC; //takes<150ns
-			}
-
-		}
-	}
-
-	else{
-		if  (int_phase < 105)	{
-			uA = 1;
-			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
-			TIM1->CCR1 = pwmA; //takes<150ns
-//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
-//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
-//
-//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC2CE);
-//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC2CE);
-//			SET_BIT(TIM1->CCMR2, TIM_CCMR2_OC3CE);
-//			CLEAR_BIT(TIM1->CCMR2, TIM_CCMR2_OC3CE);
-
-			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
-			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
-		}
-		else if  (int_phase < 210)	{
-			uB = 1;
-			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
-			TIM1->CCR2 = pwmB; //takes<150ns
-
-			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
-			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
-		}
-		else if  (int_phase < 315)	{
-			uB = 1;
-			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
-			TIM1->CCR2 = pwmB; //takes<150ns
-
-			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
-			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
-		}
-		else if  (int_phase < 420)	{
-			uC = 1;
-			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
-			TIM1->CCR3 = pwmC; //takes<150ns
-
-			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
-			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
-		}
-		else if  (int_phase < 525)	{
-			uC = 1;
-			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
-			TIM1->CCR3 = pwmC; //takes<150ns
-
-			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
-			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
-		}
-		else 	{
-			uA = 1;
-			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
-			TIM1->CCR1 = pwmA; //takes<150ns
-
-			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
-			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS3N);
-		}
-
-
-	}
-
-
-
-
-}
-
-
-
-//void HAL_ADCEx_InjectedConvCpltCallback (ADC_HandleTypeDef *hadc){
-//
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
 //}
+
+
+
 
 /* USER CODE END 4 */
 
