@@ -18,11 +18,38 @@
  */
 
 //Big todo
-// - reliable programming and rieadout of angle sensor
+//
+// --- code
+// - init routine declutter
+// - variable sorting
+//
+// --- architecture
+// - injection triggers sensing that take way too long (8prescalor*4*(3+5+15)cycles)=8mus
+//
+// --- features
+// - force control
+// - self check
+// - CAN comm
+// - DONE read Vbus
+// - read IMU
+// - program DRV (max current)
+//
+// --- more
+// - V sense
+// - power measurement
+//
+// --- reliability
+// - reliable programming and readout of angle sensor
 // - booting up from switch on without reset
 // - reliable play button when writing code
-// - analog channels work on one board only
-// - increase encoder steps to get better resolution in v and a
+//
+// --- design
+// - lp of ABCsense with 1mus rise 600kHz may not be ideal
+// - lp in current sense is different for A than for B and C !
+//
+// --- further digging
+// - I sense is right at end of PWM cycle but I only see B compromised when moving it away from there?
+
 
 
 /* USER CODE END Header */
@@ -45,7 +72,6 @@
 #include <math.h>
 #include <stdbool.h>
 //#include "arm_math.h"
-//#include "arm_math.h"
 
 /* USER CODE END Includes */
 
@@ -57,42 +83,113 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define DB_TIMING 0
-#define FOC_ALG 1
 
-#define PI 3.14159f
-#define PI2 6.28318f
+/*****************************************************************************
+ *                                                                           *
+ *    CONTROL PANEL
+ *                                                                           *
+ *****************************************************************************
+ */
+#define DB_TIMING 1
+#define I_CALIB_ENABLED 1
 
-#define INV_SQRT_3 0.57735f //allowed great speed up!
+/*****************************************************************************
+ *                                                                           *
+ *    SYSTEM CONSTANTS
+ *                                                                           *
+ *****************************************************************************
+ */
 
-//#define USE_HAL_TIM_REGISTER_CALLBACKS 1    // TODO work out other callback for encoder
+// --- ENCODER
 #define ENC_STEPS 4000 // edge changes on A and B outputs - Note that ARR in TIM8 needs to be set to ENC_STEPS-1
+#define ENC_STEPS_F 4000.0f // edge changes on A and B outputs - Note that ARR in TIM8 needs to be set to ENC_STEPS-1
 #define ENC_STEPS_HALF 2000 // to be set equal to  ENC_STEPS / 2
 #define ENC_RESOLUTION 16384 // 14 bit resolution for angle reading via SPI
 #define ENC_TOLERANCE 2
 
+// --- MOTOR
 #define N_PHASES 3
 
+// --- PWM
 #define PWM_STEPS 4096
+#define PWM_STEPS_F 4096.0f
 #define PWM_1PERCENT 41 // set this to 1% of the PWM_STEP
-#define AMP_LIMIT 0.9f
+#define AMP_LIMIT 0.95f //0.98f is absolute min so I measurement can work 85 would also free up F measurement - swinging not considered
 
+// --- ADCs
+#define ADC1_BUF_LEN 8
+#define ADC2_BUF_LEN 4
+#define ADC3_BUF_LEN 4
 
+#define RANK_U 1
+#define RANK_T 2
+#define RANK_F 3
+#define RANK_I 4
 
-#define BUF_LEN 400
-#define BUF_ADD_LEN 200
+#define RANK_CONT_U 1
+#define RANK_CONT_T 2
+#define RANK_CONT_F 3
+#define RANK_CONT_I 4
+#define RANK_CONT_TMCU 5
+#define RANK_CONT_Vref 6
+#define RANK_CONT_Vbat 7 // V mcu supply
+#define RANK_CONT_Vbus 8 // V actual battery
 
-#define DB1H debug1_out_GPIO_Port->BSRR = debug1_out_Pin
-#define DB1L debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U
+#define CONVERT_VBUS_INT2V 0.0165f // 603 for 10V
 
+// --- ROUTINE PARAMS
 #define ANALOG_SAMPLES_BITSHIFT 5
 #define ANALOG_SAMPLES_N 32 // must be 2^ANALOG_SAMPLES_BITSHIFT
+
+#define ANALOG_SAMPLES_AV_BITSHIFT 6
+#define ANALOG_SAMPLES_AV_N 64 // must be 2^ANALOG_SAMPLES_AV_BITSHIFT
 
 #define FAST_PER_SLOW 8
 
 #define FOC_PHASE_LIM 0.3f
 
-#define PWM_F 2048.0f
+#define OMEGAENC_MISSING_UPDATE_MAX 100
+
+#define LP_OMEGA_CONST 0.2f //stiffness mode gets noisy with 1 and maybe too inert with 0.1
+
+#define LP_OMEGA_ENC_DOT_CONST 0.5f
+
+#define LP_OMEGA_ENC_CONST 0.5f
+
+//#define LP_TEMP 0.1f
+
+#define I_CALIB_N 128
+
+// ---BUFFERS
+#define BUF_LEN 400
+#define BUF_ADD_LEN 200
+
+/*****************************************************************************
+ *                                                                           *
+ *    FOREVER CONSTANTS
+ *                                                                           *
+ *****************************************************************************
+ */
+#define PI 3.14159f
+#define PI2 6.28318f
+
+#define INV_SQRT_3 0.57735f
+
+#define WANKEL_ADVANTAGE 1.1547f // WANKEL! sqrt(3)/1.5
+
+/*****************************************************************************
+ *                                                                           *
+ *    MACROS
+ *                                                                           *
+ *****************************************************************************
+ */
+
+#define DB1H debug1_out_GPIO_Port->BSRR = debug1_out_Pin
+#define DB1L debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U
+
+#define DB2H debug2_out_GPIO_Port->BSRR = debug2_out_Pin;
+#define DB2L debug2_out_GPIO_Port->BSRR = debug2_out_Pin << 16U;
+
 
 
 
@@ -158,7 +255,6 @@ uint8_t rx_mode_1 = 0;
 uint8_t rx_intent = 0;
 //unsigned int r : 32;
 CAN_FilterTypeDef sFilterConfig;
-
 uint32_t can_pending_before = 22;
 uint32_t can_pending_after = 22;
 
@@ -205,7 +301,7 @@ void step_through_pole_angles(void);
 void step_through_pwm_percent(void);
 void explore_limits(void);
 void set_pwm_off(void);
-void calc_v(void);
+void calc_omega(void);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void update_pwm(void);
 void fast_control_task(void);
@@ -214,6 +310,8 @@ void keyboard_intake(void);
 void print_task(void);
 void print_prep_task(int fast_control_task_counter);
 void timing_party(void);
+float omega_division(int32_t delta_EncVal, int32_t delta_t);
+int32_t encoder_jump_comp(int32_t delta_EncVal);
 
 
 
@@ -256,6 +354,9 @@ float phase0 = 1.2f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define CAN_ID 0x100
 #define INVERT 0
+#define DIFF_FORCE 0
+#define I_LIM 50.0f //amps
+#define I_LIM_MAX_COUNT 100 // max number of encounters in fast loop
 
 //--ESC_ID = 100; // clavicle yaw
 //float phase0 = -1.232f;  // set to at ABC=0 angle*2*pi/2000*N_poles=angle*0.0220 = (1944-2000)*0.022=-1.232//$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
@@ -273,21 +374,27 @@ float phase0 = 1.2f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
 // --- SYSTEM SPECIFIC PARAMETERS
 
-enum Control_method {sinusoidal = 0, trapezoidal = 1, freerun = 2} ;
-control_method = sinusoidal;
+/*****************************************************************************
+ *                                                                           *
+ *    CONTROL PARAMETERS
+ *                                                                           *
+ *****************************************************************************
+ */
 
-uint8_t CONVERT=0;
+enum Current_mode {sinusoidal = 0, trapezoidal = 1, freerun = 2} ;
+current_mode = sinusoidal;
 
-int pwm = 2048; // this is half of PWM_STEPS? todo check
-float pwm_float = 2048.0f;
-// --- CONTROL PARAMETERS
+enum Control_mode {voltage_control = 0, position_control = 1, force_control = 2};
+control_mode = voltage_control;
 
-float amp = 0.01f;  // amp //todo check if f needs to be appended
-bool sw_enable_pwm = true;
-//int direction = 1;
-float phase_shift = PI/2 ; //todo 0.1f is an empirical correction and is to be replaced by FOC
+uint8_t convert2SI=0;
 
-float stiffness = 0;
+bool counter0ing_at0crossing = true;
+
+float amp = 0.0f;
+bool sw_enable_pwm = false;
+float phase_shift = PI/2.0f ;
+float stiffness = -0.00; // -0.0024 makes motor invisible
 
 float pos_amp = 100.0f;
 float pos_freq = 0.5f;
@@ -295,32 +402,32 @@ float pos_amp_limit = 0.2f;
 int32_t pos_offset = 0;
 float P_gain = 0.0005f;
 
-// --- INITIALIZE OTHER GLOBALS
-int32_t EncVal;
-int32_t last_EncVal;
-int32_t last_EncVal_v;
+/*****************************************************************************
+ *                                                                           *
+ *    SYSTEM VARIABLES
+ *                                                                           *
+ *****************************************************************************
+ */
 
+int32_t init_EncVal;
 int32_t rotation_counter = 0;
-//int32_t rotation_counter_abs = 0; // TODO if useful
-bool counter0ing_at0crossing = true;
-float phase = 0.0f;
-int field_phase_int = 0;
-float vel = 0.0f;
-float av_vel = 0.0f;
-int pwmA = 0;
-int pwmB = 0;
-int pwmC = 0;
 
-int skip_update = 0;
-int skip_update_high_v = 0;
+int32_t last_EncVal_pwm;
+int32_t last_EncVal_omega;
+int32_t last_EncVal_omegaEnc;
 
+int32_t omegaEnc_missing_update_counter = 0; //reseet in Enc interrupt and incremented in fast_task
 
-uint16_t adc1_buf[8];
-uint16_t adc2_buf[8];
-uint16_t adc3_buf[8];
+float omega = 0.0f;
+float lp_omega = 0.0f;
+float omegaEnc = 0.0f;
+float lp_omegaEnc = 0.0f;
+float omegaEncDot = 0.0;
+float lp_omegaEncDot = 0.0f;
 
-uint16_t val_SO1_buf_index = 0;
-uint16_t val_SO1_buf[200];
+uint16_t adc1_buf[ADC1_BUF_LEN];
+uint16_t adc2_buf[ADC2_BUF_LEN];
+uint16_t adc3_buf[ADC3_BUF_LEN];
 
 int32_t pole_phase_int;
 
@@ -347,7 +454,6 @@ uint8_t wave_mode = 0;
 uint8_t mode_of_operation = 0; // 0=startup 1=standard
 //enum mode_of_operation{ STARTUP, STANDARD};
 
-uint8_t mode_of_control = 0; // 0=open 1=position
 
 int32_t Enc_Val_total_lim_m = 0;
 int32_t Enc_Val_total_lim_p = 0;
@@ -362,27 +468,46 @@ float sin_lookup[628];
 float cos_lookup[628];
 float amp_harmonic = 1.0f;
 
+
+//uint32_t val_I = 0;
+//uint32_t val_ASENSE = 0;
 uint32_t acc_STRAIN0 = 0; //last number refers to rank
+uint32_t fast_STRAIN0 = 0; //last number refers to rank
+uint32_t acc_Vbus = 0;
+uint32_t fast_Vbus = 600;
+//uint32_t lp_ESC_TEMP = 0;
+//float lp_ESC_TEMP = 0.0f;
+uint32_t acc_ESC_TEMP = 0;
+uint32_t av_ESC_TEMP = 0;
 
-uint32_t val_I = 0;
-uint32_t val_ASENSE = 0;
-uint32_t val_STRAIN0 = 0; //last number refers to rank
-uint32_t val_M0_TEMP = 0;
-
-uint32_t val_SO1 = 0;
-uint32_t val_BSENSE = 0;
-uint32_t val_STRAIN1 = 0;
-uint32_t val_TEMP = 0;
+//uint32_t val_SO1 = 0;
+//uint32_t val_BSENSE = 0;
+uint32_t acc_STRAIN1 = 0; //last number refers to rank
+uint32_t fast_STRAIN1 = 0;
+//uint32_t lp_MOT_TEMP = 0;
+//float lp_MOT_TEMP = 0.0f;
+uint32_t acc_MOT_TEMP = 0;
+uint32_t av_MOT_TEMP = 0;
 //uint32_t val_VBUS = 0; //TODO this value is not read out correctly - always comes as 0
 
-uint32_t val_SO2 = 0;
-uint32_t val_CSENSE = 0;
+//uint32_t val_SO2 = 0;
+//uint32_t val_CSENSE = 0;
+
+float acc_I_tot_squared = 0.0f;
+float fast_I_tot = 0.0f;
+
+float acc_u0 = 0.0f;
+float fast_u0 = 0.0f;
+
+float fast_P_consumed = 0.0f;
 
 
 uint32_t analog_samples_counter = 0;
 uint32_t fast_control_task_counter = 0;
 uint32_t slow_control_task_counter = 0;
 uint32_t prep_counter = 0;
+
+
 
 
 float direct_component = 0.0f;
@@ -398,8 +523,8 @@ int32_t quadrature_component_sum = 0;
 
 float FOC_phase_shift = 0.0f;
 
-float generic_gain = 1.0f;
-float generic_n = 0.0f;
+float generic_fac = 1.0f;
+float generic_add = 0.0f;
 
 float p = 0.0f;
 float a;
@@ -407,18 +532,20 @@ float b;
 
 char ch='.';
 
-char buf[BUF_LEN]; //todo switch to char
-char buf_add[BUF_ADD_LEN];
+char buf[BUF_LEN + 1]; //todo switch to char
+char buf_add[BUF_ADD_LEN + 1];
+
+bool FOC_enabled = true;
 
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
-	/* USER CODE BEGIN 1 */
+  /* USER CODE BEGIN 1 */
 
 	// --- STARTING SERIAL OUTPUT IN TERMINAL
 	//ls /dev/tty*
@@ -430,50 +557,50 @@ int main(void)
 
 
 
-	/* USER CODE END 1 */
+  /* USER CODE END 1 */
+  
 
+  /* MCU Configuration--------------------------------------------------------*/
 
-	/* MCU Configuration--------------------------------------------------------*/
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
 
-	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-	HAL_Init();
-
-	/* USER CODE BEGIN Init */
+  /* USER CODE BEGIN Init */
 
 	// todo transfer init part of code here
 
-	/* USER CODE END Init */
+  /* USER CODE END Init */
 
-	/* Configure the system clock */
-	SystemClock_Config();
+  /* Configure the system clock */
+  SystemClock_Config();
 
-	/* USER CODE BEGIN SysInit */
+  /* USER CODE BEGIN SysInit */
 
-	/* USER CODE END SysInit */
+  /* USER CODE END SysInit */
 
-	/* Initialize all configured peripherals */
-	MX_GPIO_Init();
-	MX_DMA_Init();
-	MX_TIM9_Init();
-	MX_SPI2_Init();
-	MX_ADC1_Init();
-	MX_ADC2_Init();
-	MX_CAN1_Init();
-	MX_I2C1_Init();
-	MX_I2C2_Init();
-	MX_TIM1_Init();
-	MX_USART3_UART_Init();
-	MX_TIM8_Init();
-	MX_TIM13_Init();
-	MX_TIM12_Init();
-	MX_TIM2_Init();
-	MX_ADC3_Init();
-	MX_USB_OTG_FS_PCD_Init();
-	MX_RTC_Init();
-	MX_TIM6_Init();
-	MX_TIM3_Init();
-	MX_TIM5_Init();
-	/* USER CODE BEGIN 2 */
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_TIM9_Init();
+  MX_SPI2_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
+  MX_CAN1_Init();
+  MX_I2C1_Init();
+  MX_I2C2_Init();
+  MX_TIM1_Init();
+  MX_USART3_UART_Init();
+  MX_TIM8_Init();
+  MX_TIM13_Init();
+  MX_TIM12_Init();
+  MX_TIM2_Init();
+  MX_ADC3_Init();
+  MX_USB_OTG_FS_PCD_Init();
+  MX_RTC_Init();
+  MX_TIM6_Init();
+  MX_TIM3_Init();
+  MX_TIM5_Init();
+  /* USER CODE BEGIN 2 */
 
 	calc_lookup(lookup);
 	calc_sin_lookup(sin_lookup);
@@ -690,10 +817,11 @@ int main(void)
 
 	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
 	//angle &= AS_DATA_MASK;
-	EncVal = (uint32_t) ((float)angle /16384.0f * ENC_STEPS);
-	last_EncVal = EncVal;
-	last_EncVal_v = EncVal;
-	TIM8->CNT = EncVal;
+	init_EncVal = (uint16_t) ((float)angle /16384.0f * ENC_STEPS_F);
+	last_EncVal_omega = init_EncVal;
+	last_EncVal_omegaEnc = init_EncVal;
+	last_EncVal_pwm = init_EncVal;
+	TIM8->CNT = init_EncVal;
 
 
 	// --- Calibrate phase0   ------ TODO also this requires that we are not yet sensitive to value change
@@ -710,10 +838,14 @@ int main(void)
 
 	//HAL_TIM_RegisterCallback(&htim8, HAL_TIM_IC_CAPTURE_CB_ID, &EncoderStepCallback );
 
+
+	//HAL_ADC_Start(&hadc1);
+	//HAL_ADC_Start(&hadc2);
+	//HAL_ADC_Start(&hadc3);
 	// --- ADC DMA
-	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, 30); // this is the only one working // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
-	HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, 30); // TODO enabling this only leads to no change all values stay zero
-	HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_buf, 30); // TODO enabling this breaks transmission entirely
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, ADC1_BUF_LEN); // this is the only one working // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
+	HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, ADC2_BUF_LEN); // TODO enabling this only leads to no change all values stay zero
+	HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_buf, ADC3_BUF_LEN); // TODO enabling this breaks transmission entirely
 
 
 	HAL_ADCEx_InjectedStart (&hadc1);
@@ -725,9 +857,9 @@ int main(void)
 	//
 
 	// --- WELCOME
-	sprintf((char*)buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
-			angle, EncVal ,
-			angle, EncVal );
+	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d init_EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
+			angle, init_EncVal ,
+			angle, init_EncVal );
 	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
 	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 
@@ -757,16 +889,52 @@ int main(void)
 	HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
 
 
+	// --- SYSTEM CALIBRATION ----------------------------------------------------
 
+	// --- find current sense offsets
+	//float acc_I_A = 0.0f;
+#if I_CALIB_ENABLED
+	A_mean = 0;
+	B_mean = 0;
+	C_mean = 0;
+	for (int i=0; i<I_CALIB_N; i++){
+		A_mean += HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I);
+		B_mean += HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I);
+		C_mean += HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I);
+		HAL_Delay(1);
+	}
+	A_mean /= I_CALIB_N;
+	B_mean /= I_CALIB_N;
+	C_mean /= I_CALIB_N;
+
+	sprintf(buf, "I_mean: %8.3f %8.3f %8.3f \n", A_mean, B_mean, C_mean );
+	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+	HAL_Delay(10);
+#endif
+
+
+	// --- SYSTEM CHECK ----------------------------------------------------
+
+	//adc1_buf[RANK_CONT_Vbus-1]
+	//adc1_buf[RANK_CONT_Vbus-1]
+	//fast_Vbus
+
+//if (A_mean>1500.0f )
+
+	// --- SYSTEM START ----------------------------------------------------
 	mode_of_operation = 1;
+	sw_enable_pwm = true;
+	amp = 0.01f;
 
-	/* USER CODE END 2 */
+  /* USER CODE END 2 */
 
-	/* Infinite loop */
-	/* USER CODE BEGIN WHILE */
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
 	while (1)
 	{
 
+		// --- calling fast control task
 		if (analog_samples_counter >= ANALOG_SAMPLES_N){
 			fast_control_task();
 			print_prep_task(prep_counter);
@@ -776,6 +944,7 @@ int main(void)
 			prep_counter ++;
 		}
 
+		// --- calling slow control task
 		if(fast_control_task_counter >= FAST_PER_SLOW){
 			slow_control_task();
 
@@ -783,8 +952,7 @@ int main(void)
 			slow_control_task_counter ++;
 		}
 
-
-
+		// --- calling print task
 		static uint32_t last_ui_task_cnt = 0;
 		uint32_t t_since_last_ui_task = TIM5->CNT - last_ui_task_cnt; //TIM5 100kHz = 10mus
 		if (t_since_last_ui_task > 2000000000){
@@ -804,1249 +972,1288 @@ int main(void)
 
 		}
 
-		/* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
-		/* USER CODE BEGIN 3 */
+    /* USER CODE BEGIN 3 */
 	}
-	/* USER CODE END 3 */
+  /* USER CODE END 3 */
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
-	RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-	RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-	/** Configure the main internal regulator output voltage
-	 */
-	__HAL_RCC_PWR_CLK_ENABLE();
-	__HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-	/** Initializes the CPU, AHB and APB busses clocks
-	 */
-	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
-	RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-	RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-	RCC_OscInitStruct.PLL.PLLM = 4;
-	RCC_OscInitStruct.PLL.PLLN = 168;
-	RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-	RCC_OscInitStruct.PLL.PLLQ = 7;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Initializes the CPU, AHB and APB busses clocks
-	 */
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-			|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
-	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+  /** Configure the main internal regulator output voltage 
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  /** Initializes the CPU, AHB and APB busses clocks 
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 168;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Initializes the CPU, AHB and APB busses clocks 
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-	PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
-	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Enables the Clock Security System
-	 */
-	HAL_RCC_EnableCSS();
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Enables the Clock Security System 
+  */
+  HAL_RCC_EnableCSS();
 }
 
 /**
- * @brief ADC1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_ADC1_Init(void)
 {
 
-	/* USER CODE BEGIN ADC1_Init 0 */
+  /* USER CODE BEGIN ADC1_Init 0 */
 
-	/* USER CODE END ADC1_Init 0 */
+  /* USER CODE END ADC1_Init 0 */
 
-	ADC_MultiModeTypeDef multimode = {0};
-	ADC_ChannelConfTypeDef sConfig = {0};
-	ADC_InjectionConfTypeDef sConfigInjected = {0};
+  ADC_MultiModeTypeDef multimode = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+  ADC_InjectionConfTypeDef sConfigInjected = {0};
 
-	/* USER CODE BEGIN ADC1_Init 1 */
+  /* USER CODE BEGIN ADC1_Init 1 */
 
-	/* USER CODE END ADC1_Init 1 */
-	/** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-	 */
-	hadc1.Instance = ADC1;
-	hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
-	hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-	hadc1.Init.ScanConvMode = ENABLE;
-	hadc1.Init.ContinuousConvMode = DISABLE;
-	hadc1.Init.DiscontinuousConvMode = DISABLE;
-	hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-	hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-	hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-	hadc1.Init.NbrOfConversion = 4;
-	hadc1.Init.DMAContinuousRequests = ENABLE;
-	hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
-	if (HAL_ADC_Init(&hadc1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure the ADC multi-mode
-	 */
-	multimode.Mode = ADC_TRIPLEMODE_INJECSIMULT;
-	multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_5CYCLES;
-	if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_1;
-	sConfig.Rank = 1;
-	sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
-	if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_5;
-	sConfig.Rank = 2;
-	sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-	if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Rank = 3;
-	if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_1;
-	sConfig.Rank = 4;
-	if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_1;
-	sConfigInjected.InjectedRank = 1;
-	sConfigInjected.InjectedNbrOfConversion = 4;
-	sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
-	sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISINGFALLING;
-	sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4;
-	sConfigInjected.AutoInjectedConv = DISABLE;
-	sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
-	sConfigInjected.InjectedOffset = 0;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_11;
-	sConfigInjected.InjectedRank = 2;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_14;
-	sConfigInjected.InjectedRank = 3;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_5;
-	sConfigInjected.InjectedRank = 4;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN ADC1_Init 2 */
+  /* USER CODE END ADC1_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion) 
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 8;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure the ADC multi-mode 
+  */
+  multimode.Mode = ADC_TRIPLEMODE_INJECSIMULT;
+  multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_5CYCLES;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_14;
+  sConfig.Rank = 3;
+  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 4;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Rank = 5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_VREFINT;
+  sConfig.Rank = 6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_VBAT;
+  sConfig.Rank = 7;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 8;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_11;
+  sConfigInjected.InjectedRank = 1;
+  sConfigInjected.InjectedNbrOfConversion = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISINGFALLING;
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4;
+  sConfigInjected.AutoInjectedConv = DISABLE;
+  sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected.InjectedOffset = 0;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_5;
+  sConfigInjected.InjectedRank = 2;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_14;
+  sConfigInjected.InjectedRank = 3;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_1;
+  sConfigInjected.InjectedRank = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
 
-	/* USER CODE END ADC1_Init 2 */
+  /* USER CODE END ADC1_Init 2 */
 
 }
 
 /**
- * @brief ADC2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief ADC2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_ADC2_Init(void)
 {
 
-	/* USER CODE BEGIN ADC2_Init 0 */
+  /* USER CODE BEGIN ADC2_Init 0 */
 
-	/* USER CODE END ADC2_Init 0 */
+  /* USER CODE END ADC2_Init 0 */
 
-	ADC_ChannelConfTypeDef sConfig = {0};
-	ADC_InjectionConfTypeDef sConfigInjected = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+  ADC_InjectionConfTypeDef sConfigInjected = {0};
 
-	/* USER CODE BEGIN ADC2_Init 1 */
+  /* USER CODE BEGIN ADC2_Init 1 */
 
-	/* USER CODE END ADC2_Init 1 */
-	/** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-	 */
-	hadc2.Instance = ADC2;
-	hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
-	hadc2.Init.Resolution = ADC_RESOLUTION_12B;
-	hadc2.Init.ScanConvMode = ENABLE;
-	hadc2.Init.ContinuousConvMode = DISABLE;
-	hadc2.Init.DiscontinuousConvMode = DISABLE;
-	hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-	hadc2.Init.NbrOfConversion = 4;
-	hadc2.Init.DMAContinuousRequests = ENABLE;
-	hadc2.Init.EOCSelection = ADC_EOC_SEQ_CONV;
-	if (HAL_ADC_Init(&hadc2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_2;
-	sConfig.Rank = 1;
-	sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
-	if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_12;
-	sConfig.Rank = 2;
-	if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_15;
-	sConfig.Rank = 3;
-	if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_4;
-	sConfig.Rank = 4;
-	if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_2;
-	sConfigInjected.InjectedRank = 1;
-	sConfigInjected.InjectedNbrOfConversion = 4;
-	sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
-	sConfigInjected.AutoInjectedConv = DISABLE;
-	sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
-	sConfigInjected.InjectedOffset = 0;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_12;
-	sConfigInjected.InjectedRank = 2;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_15;
-	sConfigInjected.InjectedRank = 3;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_4;
-	sConfigInjected.InjectedRank = 4;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN ADC2_Init 2 */
+  /* USER CODE END ADC2_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion) 
+  */
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
+  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc2.Init.ScanConvMode = ENABLE;
+  hadc2.Init.ContinuousConvMode = ENABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 4;
+  hadc2.Init.DMAContinuousRequests = ENABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Rank = 3;
+  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = 4;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_12;
+  sConfigInjected.InjectedRank = 1;
+  sConfigInjected.InjectedNbrOfConversion = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfigInjected.AutoInjectedConv = DISABLE;
+  sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected.InjectedOffset = 0;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_4;
+  sConfigInjected.InjectedRank = 2;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_15;
+  sConfigInjected.InjectedRank = 3;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_2;
+  sConfigInjected.InjectedRank = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC2_Init 2 */
 
-	/* USER CODE END ADC2_Init 2 */
+  /* USER CODE END ADC2_Init 2 */
 
 }
 
 /**
- * @brief ADC3 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief ADC3 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_ADC3_Init(void)
 {
 
-	/* USER CODE BEGIN ADC3_Init 0 */
+  /* USER CODE BEGIN ADC3_Init 0 */
 
-	/* USER CODE END ADC3_Init 0 */
+  /* USER CODE END ADC3_Init 0 */
 
-	ADC_ChannelConfTypeDef sConfig = {0};
-	ADC_InjectionConfTypeDef sConfigInjected = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+  ADC_InjectionConfTypeDef sConfigInjected = {0};
 
-	/* USER CODE BEGIN ADC3_Init 1 */
+  /* USER CODE BEGIN ADC3_Init 1 */
 
-	/* USER CODE END ADC3_Init 1 */
-	/** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-	 */
-	hadc3.Instance = ADC3;
-	hadc3.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
-	hadc3.Init.Resolution = ADC_RESOLUTION_12B;
-	hadc3.Init.ScanConvMode = ENABLE;
-	hadc3.Init.ContinuousConvMode = DISABLE;
-	hadc3.Init.DiscontinuousConvMode = DISABLE;
-	hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-	hadc3.Init.NbrOfConversion = 4;
-	hadc3.Init.DMAContinuousRequests = ENABLE;
-	hadc3.Init.EOCSelection = ADC_EOC_SEQ_CONV;
-	if (HAL_ADC_Init(&hadc3) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_3;
-	sConfig.Rank = 1;
-	sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
-	if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_13;
-	sConfig.Rank = 2;
-	if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_3;
-	sConfig.Rank = 3;
-	if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-	 */
-	sConfig.Channel = ADC_CHANNEL_13;
-	sConfig.Rank = 4;
-	if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_3;
-	sConfigInjected.InjectedRank = 1;
-	sConfigInjected.InjectedNbrOfConversion = 4;
-	sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
-	sConfigInjected.AutoInjectedConv = DISABLE;
-	sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
-	sConfigInjected.InjectedOffset = 0;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_13;
-	sConfigInjected.InjectedRank = 2;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_3;
-	sConfigInjected.InjectedRank = 3;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
-	 */
-	sConfigInjected.InjectedChannel = ADC_CHANNEL_13;
-	sConfigInjected.InjectedRank = 4;
-	if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN ADC3_Init 2 */
+  /* USER CODE END ADC3_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion) 
+  */
+  hadc3.Instance = ADC3;
+  hadc3.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
+  hadc3.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc3.Init.ScanConvMode = ENABLE;
+  hadc3.Init.ContinuousConvMode = ENABLE;
+  hadc3.Init.DiscontinuousConvMode = DISABLE;
+  hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc3.Init.NbrOfConversion = 4;
+  hadc3.Init.DMAContinuousRequests = ENABLE;
+  hadc3.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  if (HAL_ADC_Init(&hadc3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_13;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
+  */
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_13;
+  sConfigInjected.InjectedRank = 1;
+  sConfigInjected.InjectedNbrOfConversion = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfigInjected.AutoInjectedConv = DISABLE;
+  sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected.InjectedOffset = 0;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedRank = 2;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_3;
+  sConfigInjected.InjectedRank = 3;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+  */
+  sConfigInjected.InjectedRank = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc3, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC3_Init 2 */
 
-	/* USER CODE END ADC3_Init 2 */
+  /* USER CODE END ADC3_Init 2 */
 
 }
 
 /**
- * @brief CAN1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief CAN1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_CAN1_Init(void)
 {
 
-	/* USER CODE BEGIN CAN1_Init 0 */
+  /* USER CODE BEGIN CAN1_Init 0 */
 
-	/* USER CODE END CAN1_Init 0 */
+  /* USER CODE END CAN1_Init 0 */
 
-	/* USER CODE BEGIN CAN1_Init 1 */
+  /* USER CODE BEGIN CAN1_Init 1 */
 
-	/* USER CODE END CAN1_Init 1 */
-	hcan1.Instance = CAN1;
-	hcan1.Init.Prescaler = 3;
-	hcan1.Init.Mode = CAN_MODE_NORMAL;
-	hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-	hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;
-	hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
-	hcan1.Init.TimeTriggeredMode = DISABLE;
-	hcan1.Init.AutoBusOff = DISABLE;
-	hcan1.Init.AutoWakeUp = DISABLE;
-	hcan1.Init.AutoRetransmission = DISABLE;
-	hcan1.Init.ReceiveFifoLocked = DISABLE;
-	hcan1.Init.TransmitFifoPriority = DISABLE;
-	if (HAL_CAN_Init(&hcan1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN CAN1_Init 2 */
+  /* USER CODE END CAN1_Init 1 */
+  hcan1.Instance = CAN1;
+  hcan1.Init.Prescaler = 3;
+  hcan1.Init.Mode = CAN_MODE_NORMAL;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
+  hcan1.Init.TimeTriggeredMode = DISABLE;
+  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoWakeUp = DISABLE;
+  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.ReceiveFifoLocked = DISABLE;
+  hcan1.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN1_Init 2 */
 
-	/* USER CODE END CAN1_Init 2 */
+  /* USER CODE END CAN1_Init 2 */
 
 }
 
 /**
- * @brief I2C1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_I2C1_Init(void)
 {
 
-	/* USER CODE BEGIN I2C1_Init 0 */
+  /* USER CODE BEGIN I2C1_Init 0 */
 
-	/* USER CODE END I2C1_Init 0 */
+  /* USER CODE END I2C1_Init 0 */
 
-	/* USER CODE BEGIN I2C1_Init 1 */
+  /* USER CODE BEGIN I2C1_Init 1 */
 
-	/* USER CODE END I2C1_Init 1 */
-	hi2c1.Instance = I2C1;
-	hi2c1.Init.ClockSpeed = 100000;
-	hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-	hi2c1.Init.OwnAddress1 = 0;
-	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-	hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-	hi2c1.Init.OwnAddress2 = 0;
-	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN I2C1_Init 2 */
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
 
-	/* USER CODE END I2C1_Init 2 */
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
 /**
- * @brief I2C2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_I2C2_Init(void)
 {
 
-	/* USER CODE BEGIN I2C2_Init 0 */
+  /* USER CODE BEGIN I2C2_Init 0 */
 
-	/* USER CODE END I2C2_Init 0 */
+  /* USER CODE END I2C2_Init 0 */
 
-	/* USER CODE BEGIN I2C2_Init 1 */
+  /* USER CODE BEGIN I2C2_Init 1 */
 
-	/* USER CODE END I2C2_Init 1 */
-	hi2c2.Instance = I2C2;
-	hi2c2.Init.ClockSpeed = 100000;
-	hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
-	hi2c2.Init.OwnAddress1 = 0;
-	hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-	hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-	hi2c2.Init.OwnAddress2 = 0;
-	hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-	hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN I2C2_Init 2 */
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.ClockSpeed = 100000;
+  hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
 
-	/* USER CODE END I2C2_Init 2 */
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
 /**
- * @brief RTC Initialization Function
- * @param None
- * @retval None
- */
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_RTC_Init(void)
 {
 
-	/* USER CODE BEGIN RTC_Init 0 */
+  /* USER CODE BEGIN RTC_Init 0 */
 
-	/* USER CODE END RTC_Init 0 */
+  /* USER CODE END RTC_Init 0 */
 
-	/* USER CODE BEGIN RTC_Init 1 */
+  /* USER CODE BEGIN RTC_Init 1 */
 
-	/* USER CODE END RTC_Init 1 */
-	/** Initialize RTC Only
-	 */
-	hrtc.Instance = RTC;
-	hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-	hrtc.Init.AsynchPrediv = 127;
-	hrtc.Init.SynchPrediv = 255;
-	hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-	hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-	hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-	if (HAL_RTC_Init(&hrtc) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN RTC_Init 2 */
+  /* USER CODE END RTC_Init 1 */
+  /** Initialize RTC Only 
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
 
-	/* USER CODE END RTC_Init 2 */
+  /* USER CODE END RTC_Init 2 */
 
 }
 
 /**
- * @brief SPI2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief SPI2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_SPI2_Init(void)
 {
 
-	/* USER CODE BEGIN SPI2_Init 0 */
+  /* USER CODE BEGIN SPI2_Init 0 */
 
-	/* USER CODE END SPI2_Init 0 */
+  /* USER CODE END SPI2_Init 0 */
 
-	/* USER CODE BEGIN SPI2_Init 1 */
+  /* USER CODE BEGIN SPI2_Init 1 */
 
-	/* USER CODE END SPI2_Init 1 */
-	/* SPI2 parameter configuration*/
-	hspi2.Instance = SPI2;
-	hspi2.Init.Mode = SPI_MODE_MASTER;
-	hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-	hspi2.Init.DataSize = SPI_DATASIZE_16BIT;
-	hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-	hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
-	hspi2.Init.NSS = SPI_NSS_HARD_OUTPUT;
-	hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
-	hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
-	hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
-	hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-	hspi2.Init.CRCPolynomial = 10;
-	if (HAL_SPI_Init(&hspi2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN SPI2_Init 2 */
+  /* USER CODE END SPI2_Init 1 */
+  /* SPI2 parameter configuration*/
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi2.Init.DataSize = SPI_DATASIZE_16BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
+  hspi2.Init.NSS = SPI_NSS_HARD_OUTPUT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI2_Init 2 */
 
-	/* USER CODE END SPI2_Init 2 */
+  /* USER CODE END SPI2_Init 2 */
 
 }
 
 /**
- * @brief TIM1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM1_Init(void)
 {
 
-	/* USER CODE BEGIN TIM1_Init 0 */
+  /* USER CODE BEGIN TIM1_Init 0 */
 
-	/* USER CODE END TIM1_Init 0 */
+  /* USER CODE END TIM1_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-	TIM_MasterConfigTypeDef sMasterConfig = {0};
-	TIM_OC_InitTypeDef sConfigOC = {0};
-	TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
-	/* USER CODE BEGIN TIM1_Init 1 */
+  /* USER CODE BEGIN TIM1_Init 1 */
 
-	/* USER CODE END TIM1_Init 1 */
-	htim1.Instance = TIM1;
-	htim1.Init.Prescaler = 0;
-	htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim1.Init.Period = 4095;
-	htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim1.Init.RepetitionCounter = 0;
-	htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_OC_Init(&htim1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.OCMode = TIM_OCMODE_PWM1;
-	sConfigOC.Pulse = 0;
-	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-	sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
-	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
-	sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-	if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
-	sConfigOC.Pulse = 1900;
-	if (HAL_TIM_OC_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
-	sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
-	sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-	sBreakDeadTimeConfig.DeadTime = 0;
-	sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
-	sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
-	sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
-	if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM1_Init 2 */
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 4095;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 4095-1120;
+  if (HAL_TIM_OC_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
 
-	/* USER CODE END TIM1_Init 2 */
-	HAL_TIM_MspPostInit(&htim1);
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
 
 }
 
 /**
- * @brief TIM2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM2_Init(void)
 {
 
-	/* USER CODE BEGIN TIM2_Init 0 */
+  /* USER CODE BEGIN TIM2_Init 0 */
 
-	/* USER CODE END TIM2_Init 0 */
+  /* USER CODE END TIM2_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-	TIM_MasterConfigTypeDef sMasterConfig = {0};
-	TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
-	/* USER CODE BEGIN TIM2_Init 1 */
+  /* USER CODE BEGIN TIM2_Init 1 */
 
-	/* USER CODE END TIM2_Init 1 */
-	htim2.Instance = TIM2;
-	htim2.Init.Prescaler = 7;
-	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim2.Init.Period = 4294967295;
-	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.OCMode = TIM_OCMODE_TIMING;
-	sConfigOC.Pulse = 0;
-	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM2_Init 2 */
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
 
-	/* USER CODE END TIM2_Init 2 */
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
 /**
- * @brief TIM3 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM3_Init(void)
 {
 
-	/* USER CODE BEGIN TIM3_Init 0 */
+  /* USER CODE BEGIN TIM3_Init 0 */
 
-	/* USER CODE END TIM3_Init 0 */
+  /* USER CODE END TIM3_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-	TIM_MasterConfigTypeDef sMasterConfig = {0};
-	TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
-	/* USER CODE BEGIN TIM3_Init 1 */
+  /* USER CODE BEGIN TIM3_Init 1 */
 
-	/* USER CODE END TIM3_Init 1 */
-	htim3.Instance = TIM3;
-	htim3.Init.Prescaler = 83;
-	htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim3.Init.Period = 1000;
-	htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_OC_Init(&htim3) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
-	sConfigOC.Pulse = 0;
-	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM3_Init 2 */
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 83;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 1000;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
 
-	/* USER CODE END TIM3_Init 2 */
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
 /**
- * @brief TIM5 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM5_Init(void)
 {
 
-	/* USER CODE BEGIN TIM5_Init 0 */
+  /* USER CODE BEGIN TIM5_Init 0 */
 
-	/* USER CODE END TIM5_Init 0 */
+  /* USER CODE END TIM5_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-	TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-	/* USER CODE BEGIN TIM5_Init 1 */
+  /* USER CODE BEGIN TIM5_Init 1 */
 
-	/* USER CODE END TIM5_Init 1 */
-	htim5.Instance = TIM5;
-	htim5.Init.Prescaler = 839;
-	htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim5.Init.Period = 4294967295;
-	htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM5_Init 2 */
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 839;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 4294967295;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
 
-	/* USER CODE END TIM5_Init 2 */
+  /* USER CODE END TIM5_Init 2 */
 
 }
 
 /**
- * @brief TIM6 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM6_Init(void)
 {
 
-	/* USER CODE BEGIN TIM6_Init 0 */
+  /* USER CODE BEGIN TIM6_Init 0 */
 
-	/* USER CODE END TIM6_Init 0 */
+  /* USER CODE END TIM6_Init 0 */
 
-	TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-	/* USER CODE BEGIN TIM6_Init 1 */
+  /* USER CODE BEGIN TIM6_Init 1 */
 
-	/* USER CODE END TIM6_Init 1 */
-	htim6.Instance = TIM6;
-	htim6.Init.Prescaler = 83;
-	htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim6.Init.Period = 1000;
-	htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM6_Init 2 */
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 83;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 1000;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
 
-	/* USER CODE END TIM6_Init 2 */
+  /* USER CODE END TIM6_Init 2 */
 
 }
 
 /**
- * @brief TIM8 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM8 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM8_Init(void)
 {
 
-	/* USER CODE BEGIN TIM8_Init 0 */
+  /* USER CODE BEGIN TIM8_Init 0 */
 
-	/* USER CODE END TIM8_Init 0 */
+  /* USER CODE END TIM8_Init 0 */
 
-	TIM_Encoder_InitTypeDef sConfig = {0};
-	TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-	/* USER CODE BEGIN TIM8_Init 1 */
+  /* USER CODE BEGIN TIM8_Init 1 */
 
-	/* USER CODE END TIM8_Init 1 */
-	htim8.Instance = TIM8;
-	htim8.Init.Prescaler = 0;
-	htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim8.Init.Period = 3999;
-	htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim8.Init.RepetitionCounter = 0;
-	htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-	sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-	sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-	sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-	sConfig.IC1Filter = 0;
-	sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-	sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-	sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-	sConfig.IC2Filter = 0;
-	if (HAL_TIM_Encoder_Init(&htim8, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM8_Init 2 */
+  /* USER CODE END TIM8_Init 1 */
+  htim8.Instance = TIM8;
+  htim8.Init.Prescaler = 0;
+  htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim8.Init.Period = 3999;
+  htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim8.Init.RepetitionCounter = 0;
+  htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim8, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM8_Init 2 */
 
 	//HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn); // this didn't seem to be necessary
 
 
-	/* USER CODE END TIM8_Init 2 */
+  /* USER CODE END TIM8_Init 2 */
 
 }
 
 /**
- * @brief TIM9 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM9 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM9_Init(void)
 {
 
-	/* USER CODE BEGIN TIM9_Init 0 */
+  /* USER CODE BEGIN TIM9_Init 0 */
 
-	/* USER CODE END TIM9_Init 0 */
+  /* USER CODE END TIM9_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-	TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
-	/* USER CODE BEGIN TIM9_Init 1 */
+  /* USER CODE BEGIN TIM9_Init 1 */
 
-	/* USER CODE END TIM9_Init 1 */
-	htim9.Instance = TIM9;
-	htim9.Init.Prescaler = 167;
-	htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim9.Init.Period = 1000;
-	htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim9, &sClockSourceConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_PWM_Init(&htim9) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.OCMode = TIM_OCMODE_PWM1;
-	sConfigOC.Pulse = 1000;
-	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.Pulse = 2000;
-	if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM9_Init 2 */
+  /* USER CODE END TIM9_Init 1 */
+  htim9.Instance = TIM9;
+  htim9.Init.Prescaler = 167;
+  htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim9.Init.Period = 1000;
+  htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim9, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim9) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 1000;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.Pulse = 2000;
+  if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM9_Init 2 */
 
-	/* USER CODE END TIM9_Init 2 */
-	HAL_TIM_MspPostInit(&htim9);
+  /* USER CODE END TIM9_Init 2 */
+  HAL_TIM_MspPostInit(&htim9);
 
 }
 
 /**
- * @brief TIM12 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM12 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM12_Init(void)
 {
 
-	/* USER CODE BEGIN TIM12_Init 0 */
+  /* USER CODE BEGIN TIM12_Init 0 */
 
-	/* USER CODE END TIM12_Init 0 */
+  /* USER CODE END TIM12_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-	TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
-	/* USER CODE BEGIN TIM12_Init 1 */
+  /* USER CODE BEGIN TIM12_Init 1 */
 
-	/* USER CODE END TIM12_Init 1 */
-	htim12.Instance = TIM12;
-	htim12.Init.Prescaler = 7;
-	htim12.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim12.Init.Period = 65535;
-	htim12.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim12.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim12) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim12, &sClockSourceConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_OC_Init(&htim12) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigOC.OCMode = TIM_OCMODE_TIMING;
-	sConfigOC.Pulse = 0;
-	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if (HAL_TIM_OC_ConfigChannel(&htim12, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM12_Init 2 */
+  /* USER CODE END TIM12_Init 1 */
+  htim12.Instance = TIM12;
+  htim12.Init.Prescaler = 7;
+  htim12.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim12.Init.Period = 65535;
+  htim12.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim12.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim12) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim12, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim12) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim12, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM12_Init 2 */
 
-	/* USER CODE END TIM12_Init 2 */
+  /* USER CODE END TIM12_Init 2 */
 
 }
 
 /**
- * @brief TIM13 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM13 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM13_Init(void)
 {
 
-	/* USER CODE BEGIN TIM13_Init 0 */
+  /* USER CODE BEGIN TIM13_Init 0 */
 
-	/* USER CODE END TIM13_Init 0 */
+  /* USER CODE END TIM13_Init 0 */
 
-	TIM_IC_InitTypeDef sConfigIC = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
 
-	/* USER CODE BEGIN TIM13_Init 1 */
+  /* USER CODE BEGIN TIM13_Init 1 */
 
-	/* USER CODE END TIM13_Init 1 */
-	htim13.Instance = TIM13;
-	htim13.Init.Prescaler = 0;
-	htim13.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim13.Init.Period = 0;
-	htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim13.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim13) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_TIM_IC_Init(&htim13) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-	sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-	sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-	sConfigIC.ICFilter = 0;
-	if (HAL_TIM_IC_ConfigChannel(&htim13, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM13_Init 2 */
+  /* USER CODE END TIM13_Init 1 */
+  htim13.Instance = TIM13;
+  htim13.Init.Prescaler = 0;
+  htim13.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim13.Init.Period = 0;
+  htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim13.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim13) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim13) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim13, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM13_Init 2 */
 
-	/* USER CODE END TIM13_Init 2 */
+  /* USER CODE END TIM13_Init 2 */
 
 }
 
 /**
- * @brief USART3 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART3_UART_Init(void)
 {
 
-	/* USER CODE BEGIN USART3_Init 0 */
+  /* USER CODE BEGIN USART3_Init 0 */
 
-	/* USER CODE END USART3_Init 0 */
+  /* USER CODE END USART3_Init 0 */
 
-	/* USER CODE BEGIN USART3_Init 1 */
+  /* USER CODE BEGIN USART3_Init 1 */
 
-	/* USER CODE END USART3_Init 1 */
-	huart3.Instance = USART3;
-	huart3.Init.BaudRate = 115200;
-	huart3.Init.WordLength = UART_WORDLENGTH_8B;
-	huart3.Init.StopBits = UART_STOPBITS_1;
-	huart3.Init.Parity = UART_PARITY_NONE;
-	huart3.Init.Mode = UART_MODE_TX_RX;
-	huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-	huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart3) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN USART3_Init 2 */
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
 
-	/* USER CODE END USART3_Init 2 */
+  /* USER CODE END USART3_Init 2 */
 
 }
 
 /**
- * @brief USB_OTG_FS Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USB_OTG_FS Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USB_OTG_FS_PCD_Init(void)
 {
 
-	/* USER CODE BEGIN USB_OTG_FS_Init 0 */
+  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
 
-	/* USER CODE END USB_OTG_FS_Init 0 */
+  /* USER CODE END USB_OTG_FS_Init 0 */
 
-	/* USER CODE BEGIN USB_OTG_FS_Init 1 */
+  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
 
-	/* USER CODE END USB_OTG_FS_Init 1 */
-	hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
-	hpcd_USB_OTG_FS.Init.dev_endpoints = 4;
-	hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
-	hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
-	hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-	hpcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
-	hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
-	hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
-	hpcd_USB_OTG_FS.Init.vbus_sensing_enable = DISABLE;
-	hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-	if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* USER CODE BEGIN USB_OTG_FS_Init 2 */
+  /* USER CODE END USB_OTG_FS_Init 1 */
+  hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
+  hpcd_USB_OTG_FS.Init.dev_endpoints = 4;
+  hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
+  hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
+  hpcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.vbus_sensing_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
+  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
 
-	/* USER CODE END USB_OTG_FS_Init 2 */
+  /* USER CODE END USB_OTG_FS_Init 2 */
 
 }
 
 /** 
- * Enable DMA controller clock
- */
+  * Enable DMA controller clock
+  */
 static void MX_DMA_Init(void) 
 {
 
-	/* DMA controller clock enable */
-	__HAL_RCC_DMA1_CLK_ENABLE();
-	__HAL_RCC_DMA2_CLK_ENABLE();
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
-	/* DMA interrupt init */
-	/* DMA1_Stream3_IRQn interrupt configuration */
-	HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
-	/* DMA2_Stream0_IRQn interrupt configuration */
-	HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
-	/* DMA2_Stream1_IRQn interrupt configuration */
-	HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
-	/* DMA2_Stream2_IRQn interrupt configuration */
-	HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+  /* DMA interrupt init */
+  /* DMA1_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-	/* GPIO Ports Clock Enable */
-	__HAL_RCC_GPIOE_CLK_ENABLE();
-	__HAL_RCC_GPIOC_CLK_ENABLE();
-	__HAL_RCC_GPIOH_CLK_ENABLE();
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-	__HAL_RCC_GPIOB_CLK_ENABLE();
-	__HAL_RCC_GPIOD_CLK_ENABLE();
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
 
-	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOE, LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin, GPIO_PIN_RESET);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin, GPIO_PIN_RESET);
 
-	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
-	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOD, GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin
-			|nSCS_Pin, GPIO_PIN_RESET);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin 
+                          |nSCS_Pin, GPIO_PIN_RESET);
 
-	/*Configure GPIO pins : LD_1_Pin LD_2_Pin EN_GATE_Pin M0_DC_CAL_Pin */
-	GPIO_InitStruct.Pin = LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  /*Configure GPIO pins : LD_1_Pin LD_2_Pin EN_GATE_Pin M0_DC_CAL_Pin */
+  GPIO_InitStruct.Pin = LD_1_Pin|LD_2_Pin|EN_GATE_Pin|M0_DC_CAL_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : PC13 */
-	GPIO_InitStruct.Pin = GPIO_PIN_13;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-	/*Configure GPIO pins : PD11 debug1_out_Pin debug2_out_Pin ROT0_nCS_Pin
+  /*Configure GPIO pins : PD11 debug1_out_Pin debug2_out_Pin ROT0_nCS_Pin 
                            nSCS_Pin */
-	GPIO_InitStruct.Pin = GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin
-			|nSCS_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  GPIO_InitStruct.Pin = GPIO_PIN_11|debug1_out_Pin|debug2_out_Pin|ROT0_nCS_Pin 
+                          |nSCS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : debug1_in_Pin */
-	GPIO_InitStruct.Pin = debug1_in_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(debug1_in_GPIO_Port, &GPIO_InitStruct);
+  /*Configure GPIO pin : debug1_in_Pin */
+  GPIO_InitStruct.Pin = debug1_in_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(debug1_in_GPIO_Port, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : ROT0_I_W_Pin */
-	GPIO_InitStruct.Pin = ROT0_I_W_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(ROT0_I_W_GPIO_Port, &GPIO_InitStruct);
+  /*Configure GPIO pin : ROT0_I_W_Pin */
+  GPIO_InitStruct.Pin = ROT0_I_W_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ROT0_I_W_GPIO_Port, &GPIO_InitStruct);
 
-	/*Configure GPIO pins : PWRGD_Pin nOCTW_Pin nFAULT_Pin */
-	GPIO_InitStruct.Pin = PWRGD_Pin|nOCTW_Pin|nFAULT_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_PULLUP;
-	HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  /*Configure GPIO pins : PWRGD_Pin nOCTW_Pin nFAULT_Pin */
+  GPIO_InitStruct.Pin = PWRGD_Pin|nOCTW_Pin|nFAULT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-	/* EXTI interrupt init*/
-	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 }
 
@@ -2156,7 +2363,7 @@ void explore_limits(void){
 		amp= dir * 0.1f;
 		for (int32_t i = 0; i<50; i++){
 			HAL_Delay(100);
-			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+			uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I);
 			if (val_I > 2100 || val_I < 1980){
 				amp=0;
 				uint32_t EncVal_lim = TIM8->CNT;
@@ -2212,13 +2419,13 @@ void playSound(uint32_t periode, uint32_t volume, uint32_t cycles){
 void calc_lookup(float *lookup){
 	for (int i=0; i<210; i++){
 		// --- vanilla
-		//lookup[i] = cos((float)i/100.0f) + cos((float)i/100.0f-1.047f);
+		lookup[i] = 0.5773f * (cos((float)i/100.0f) + cos((float)i/100.0f-1.047f));
 
 		// --- harmonic
-		//lookup[i] = cos((float)i/100.0f)       + amp_harmonic * cos( (float)i/100.0f       * 3.0f)    +  cos((float)i/100.0f-1.047f) + amp_harmonic * cos(((float)i/100.0f-1.047f)* 3.0f) ;// the harmonic tends to fully cancel out
+		//lookup[i] = 0.5773f * (cos((float)i/100.0f)       + amp_harmonic * cos( (float)i/100.0f       * 3.0f)    +  cos((float)i/100.0f-1.047f) + amp_harmonic * cos(((float)i/100.0f-1.047f)* 3.0f)) ;// the harmonic tends to fully cancel out
 
 		// --- power law
-		lookup[i] = pow( cos((float)i/100.0f) + cos((float)i/100.0f-1.047f),amp_harmonic)/ pow(amp_harmonic,0.5f); //looks like 1.0 is already best in terms of overtones
+		//lookup[i] = 0.5773f * (pow( cos((float)i/100.0f) + cos((float)i/100.0f-1.047f),amp_harmonic)/ pow(amp_harmonic,0.5f)); //looks like 1.0 is already best in terms of overtones
 	}
 }
 
@@ -2242,26 +2449,6 @@ void DMAUSARTTransferComplete(DMA_HandleTypeDef *hdma){
 
 
 
-// I find 80Hz at 25V this would be 192kV arrg
-void calc_v(void){
-	int16_t tim2_counter = TIM2->CNT; //has prescalor of 8-1 ==> 10.5MHz ==> will always be around 10500 for heartbeat 1ms
-	TIM2->CNT = 0;
-
-	int16_t EncDiff = EncVal-last_EncVal_v; // will be 200 for 100Hz rotation or 2 for 1Hz rotation
-	last_EncVal_v = EncVal;
-
-	if (EncDiff > ENC_STEPS_HALF){ // if jump is more than a half rotation it's most likely the 0 crossing
-		EncDiff -= ENC_STEPS;
-	}
-	else if (EncDiff < -ENC_STEPS_HALF){
-		EncDiff += ENC_STEPS;
-	}
-
-	vel = (float)(EncDiff) / (float)tim2_counter; //[steps/counts]
-	vel *= 10500000/ENC_STEPS; // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO vel seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
-	av_vel = 0.95f * av_vel + 0.05f * vel;
-
-}
 
 
 // --- Callback when Encoder fires the I at zero point
@@ -2281,7 +2468,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 				buf_msgs[0] = '#';
 			}
 		}
-		val_SO1_buf_index = 0;
+		//val_SO1_buf_index = 0;
 
 		if (encoder_belief > ENC_TOLERANCE && encoder_belief < ENC_STEPS - ENC_TOLERANCE){
 			sprintf((char*)buf_msg, "[EXTI_Callback] EncVal at ZERO MISMATCH: %d \r\n", encoder_belief);
@@ -2298,11 +2485,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	}
 }
 
+/*********************************************************************************************
+ *
+ *  ###  #       #  ##   ##
+ *  #  # #       #  # # # #
+ *  ###  #   #   #  #  #  #
+ *  #     # # # #   #     #
+ *  #      #   #    #     #
+ *
+ *********************************************************************************************
+ */
 
 
 // -----------------------------------------------------------
 // MAIN UPDATE STEP interrupt triggered by timer 1 channel 4 towards end of each pwm cycle
 // -----------------------------------------------------------
+
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim){
 	if (htim != &htim1){
 		return;
@@ -2315,79 +2513,108 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim){
 	//timing_party();
 
 	// --- get current encoder position
-	last_EncVal = EncVal;
-	EncVal = TIM8->CNT;//both lines 200ns
+	register int32_t EncVal = TIM8->CNT;
+	register int32_t delta_EncVal = (int32_t)EncVal - (int32_t)last_EncVal_pwm;
+	last_EncVal_pwm = EncVal;
+
+
+
 
 	// --- determine whether 0 crossing happened and adjust rotation_counter accordingly
-	if (EncVal - last_EncVal > ENC_STEPS_HALF) {
+	if (delta_EncVal > ENC_STEPS_HALF) {
 		rotation_counter--;
 	}
-	else if (last_EncVal - EncVal > ENC_STEPS_HALF){
+	else if (delta_EncVal < -ENC_STEPS_HALF){
 		rotation_counter++;
 	}// both statements 300ns
 
-	// --- accumulate analog readings till we have enough samples which is a flag for the heart beat (= all MCU internal control loops)
-	if (analog_samples_counter < ANALOG_SAMPLES_N ){  // TODO: if n_samples >= 32
-		acc_STRAIN0 += HAL_ADCEx_InjectedGetValue (&hadc1, 3);
-		analog_samples_counter ++;
-	}//200ns when not entering presumably
+
 
 	// --- calculate the phase with respect to a pole cycle in 100x int
 	pole_phase_int = (int)((PI2 * N_POLES / ENC_STEPS * (float) EncVal - phase0 + PI2) * 100.0f) % 628 ; //400ns when consolidated in one line
 
 
 
-#if FOC_ALG
-
-	register int32_t A = HAL_ADCEx_InjectedGetValue (&hadc1, 1);//500ns
-	register int32_t B = HAL_ADCEx_InjectedGetValue (&hadc2, 1);//500ns
-	register int32_t C = HAL_ADCEx_InjectedGetValue (&hadc3, 1);//500ns
 
 
-	//	register float mean_lp = 0.00001f;
-	//      A_mean = (1-mean_lp) * A_mean + mean_lp * A;
-	//			B_mean = (1-mean_lp) * B_mean + mean_lp * B;
-	//	A_mean = 2040.0f;
-	//	B_mean = 2005.0f;
-	//	C_mean = 2005.0f;
+	register int32_t A = HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I);//500ns
+	register int32_t B = HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I);//500ns
+	register int32_t C = HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I);//500ns
 
-	// --- Park transform
-	a = 0.7f * ((float)A-A_mean);
-	b = INV_SQRT_3 * (a + 2.0f * ((float)B-B_mean)); //200ns thanks to precalc of SQRT
-
-	// -- Clark transform
-	direct_component = a * cos_lookup[pole_phase_int] + b * sin_lookup[pole_phase_int];
-	quadrature_component = -a * sin_lookup[pole_phase_int] + b * cos_lookup[pole_phase_int]; //300ns
-
-	// --- low pass filter
-	register float lp = 0.001f;
-	direct_component_lp = (1-lp) * direct_component_lp + lp * direct_component;
-	quadrature_component_lp = (1-lp) * quadrature_component_lp + lp * quadrature_component;//with register 240 without register 380ns for the 3 lines
+	register float I_A = ((float)A - A_mean) * 0.134f;
+	register float I_B = ((float)B - B_mean) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
+	register float I_C = ((float)C - C_mean) * 0.189f;
 
 
-	static float direct_component_lp_integral = 0.0f;
-	direct_component_lp_integral += direct_component_lp;//150ns for 2lines
 
-	// --- PI controller
-	FOC_phase_shift = 0.005f* generic_gain * direct_component_lp + 0.00001f  * direct_component_lp_integral; //220ns//starts oscillating at I = 0.00008f and alternatively at P = 0.03f
-
-
-	if (FOC_phase_shift > FOC_PHASE_LIM){
-		FOC_phase_shift = FOC_PHASE_LIM;
-	}
-	else if (FOC_phase_shift < -FOC_PHASE_LIM){
-		FOC_phase_shift = -FOC_PHASE_LIM;
-	}//350ns for checks
-
-	if (abs(av_vel) < 1.0f){
-		FOC_phase_shift = 0.0f;
-		direct_component_lp_integral = 0.0f;
-	}//220ns
-
-
-#else if //empirical mean
-	FOC_phase_shift = 0.1f;
+	// --- accumulate analog readings till we have enough samples which is a flag for the heart beat (= all MCU internal control loops)
+	if (analog_samples_counter < ANALOG_SAMPLES_N ){  // TODO: if n_samples >= 32
+		acc_I_tot_squared += (I_A * I_A + I_B * I_B + I_C * I_C) / 1.5f; //todo check 1.5
+		acc_STRAIN0 += HAL_ADCEx_InjectedGetValue (&hadc1, RANK_F);
+		acc_Vbus += adc1_buf[RANK_CONT_Vbus-1];
+#if DIFF_FORCE
+		acc_STRAIN1 += HAL_ADCEx_InjectedGetValue (&hadc2, RANK_F);
 #endif
+		analog_samples_counter ++;
+	}//200ns when not entering presumably
+
+	if (FOC_enabled){
+
+		//	register float mean_lp = 0.00001f;
+		//      A_mean = (1-mean_lp) * A_mean + mean_lp * A;
+		//			B_mean = (1-mean_lp) * B_mean + mean_lp * B;
+		//	A_mean = 2040.0f;
+		//	B_mean = 2005.0f;
+		//	C_mean = 2005.0f;
+
+		// --- Park transform
+		//a = 0.7f * ((float)A-A_mean);
+		//b = INV_SQRT_3 * (a + 2.0f * ((float)B-B_mean)); //200ns thanks to precalc of SQRT
+		a = I_B; // a and b derived from B and C since they have same DAC (A is on external DAC which may behave differently -- adjust phaseshift accordingly!)
+		b = INV_SQRT_3 * (a + 2.0f * I_C); //200ns thanks to precalc of SQRT
+
+		// -- Clark transform
+		register uint32_t poleB_phase_int = (pole_phase_int - 209 + 628) % 628; //
+		direct_component = a * cos_lookup[poleB_phase_int] + b * sin_lookup[poleB_phase_int];
+		quadrature_component = -a * sin_lookup[poleB_phase_int] + b * cos_lookup[poleB_phase_int]; //300ns
+
+		// --- low pass filter
+		register float lp = 0.001f;
+		direct_component_lp = (1-lp) * direct_component_lp + lp * direct_component;
+		quadrature_component_lp = (1-lp) * quadrature_component_lp + lp * quadrature_component;//with register 240 without register 380ns for the 3 lines
+
+
+		static float direct_component_lp_integral = 0.0f;
+		direct_component_lp_integral += direct_component_lp;//150ns for 2lines
+
+		register float direct_component_lp_integral_max = 0.4f / 0.00001f;
+		if (direct_component_lp_integral > direct_component_lp_integral_max){
+			direct_component_lp_integral = direct_component_lp_integral_max;
+		}
+		if (direct_component_lp_integral < -direct_component_lp_integral_max){
+			direct_component_lp_integral = -direct_component_lp_integral_max;
+		}
+
+
+		// --- PI controller
+		FOC_phase_shift = 0.005f * direct_component_lp + 0.00001f  * direct_component_lp_integral; //220ns//starts oscillating at I = 0.00008f and alternatively at P = 0.03f
+
+
+		if (FOC_phase_shift > FOC_PHASE_LIM){
+			FOC_phase_shift = FOC_PHASE_LIM;
+		}
+		else if (FOC_phase_shift < -FOC_PHASE_LIM){
+			FOC_phase_shift = -FOC_PHASE_LIM;
+		}//350ns for checks
+
+	//	if (abs(lp_omega) < 1.0f){
+	//		FOC_phase_shift = 0.0f;
+	//		direct_component_lp_integral = 0.0f;
+	//	}//220ns
+	}
+	else {
+		FOC_phase_shift = 0.1f;//empirical good mean of correction
+	}
 
 
 #if DB_TIMING
@@ -2412,28 +2639,37 @@ void update_pwm(void){
 #endif
 
 	//register int32_t field_phase_int;
-	register float u0 = 0.5773f; //0.5f * 2.0f / 1.73205f;// maximal possible U on one coil thanks to wankel //takes<200ns
-	register float modified_amp = amp + stiffness * av_vel;// * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
+	register int32_t field_phase_int = 0;
 
-	if (modified_amp > AMP_LIMIT){
-		modified_amp = AMP_LIMIT;
-	}
-	if (modified_amp < -AMP_LIMIT){
-		modified_amp = -AMP_LIMIT;
-	}
+	// --- stiffness motor
+	register float u0 = amp + stiffness * omegaEnc / (float)fast_Vbus * 603.0f ;// * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
 
-	if (modified_amp > 0){
-		field_phase_int = pole_phase_int - (int)((phase_shift + FOC_phase_shift) * 100.0f);
-		u0 *= modified_amp;  //takes<200ns
+	// -- higher order terms
+	//register float modified_amp = amp + stiffness * omega + generic_add * 0.000000001f * omega * omega * omega;//
+
+	// -- invisible motor
+	//register float modified_amp = amp + stiffness * lp_omegaEnc + lp_omegaEncDot * 0.00003f * 0.1f * generic_add;// * direction; // TODO the abs allows same stiffness to make it softer for both directions - without a signchange is needed BUT turnaround is super aggressive now :( SAME issue with direction - super forceful reverse but sign identical --- looks like v needs to direct also the phase !!!!
+	//AMAZING invisible motor kind of works at generic_add = -8 BUT super unstable at <-9....with both in lp 0.1 it is stable all the way to -25
+
+	// --- signed u0 becomes abs(u0) and direction is encoded in field_phase_int
+	if (u0 > 0){
+		field_phase_int = pole_phase_int - (int32_t)((phase_shift + FOC_phase_shift) * 100.0f);
 	}
 	else {
-		field_phase_int = pole_phase_int + (int)((phase_shift + FOC_phase_shift) * 100.0f);
-		u0 *= -modified_amp;  //takes<200ns
+		field_phase_int = pole_phase_int + (int32_t)((phase_shift + FOC_phase_shift) * 100.0f);
+		u0 = -u0;
+	}
+
+	// --- clamp u0
+	if (u0 > AMP_LIMIT){
+		u0 = AMP_LIMIT;
 	}
 
 	if (!sw_enable_pwm){
 		u0 = 0;
 	}
+
+	acc_u0 += u0;
 
 	if (field_phase_int < 0) {
 		field_phase_int += 628;
@@ -2442,12 +2678,16 @@ void update_pwm(void){
 		field_phase_int -= 628;
 	}//150ns
 
-	register float uA = 0;
-	register float uB = 0;
-	register float uC = 0;
+	register float uA = 0.0f;
+	register float uB = 0.0f;
+	register float uC = 0.0f;
 
-	if (control_method != freerun ){
-		if (control_method == sinusoidal ){
+	register uint16_t pwmA = 0;
+	register uint16_t pwmB = 0;
+	register uint16_t pwmC = 0;
+
+	if (current_mode != freerun ){
+		if (current_mode == sinusoidal ){
 
 			if  (field_phase_int < 210)	{
 				uA = lookup[field_phase_int]; //took<32000ns - with lookup implement it's just 2000ns
@@ -2466,7 +2706,7 @@ void update_pwm(void){
 			}
 		}//400ns
 
-		else if (control_method == trapezoidal){
+		else if (current_mode == trapezoidal){
 			if  (field_phase_int < 105-52)	{
 				uA = 1;
 				uB = 0;
@@ -2504,9 +2744,9 @@ void update_pwm(void){
 			}
 		}
 
-		pwmA = (uint16_t) (PWM_F * u0 * uA); //180ns
-		pwmB = (uint16_t) (PWM_F * u0 * uB); //180ns
-		pwmC = (uint16_t) (PWM_F * u0 * uC); //180ns
+		pwmA = (uint16_t) (PWM_STEPS_F * u0 * uA); //180ns
+		pwmB = (uint16_t) (PWM_STEPS_F * u0 * uB); //180ns
+		pwmC = (uint16_t) (PWM_STEPS_F * u0 * uC); //180ns
 
 		// --- send out PWM pulses 0...2048
 		if (normal_operation_enabled){
@@ -2526,7 +2766,7 @@ void update_pwm(void){
 	else{ // NOTE this mode is still experimental
 		if  (field_phase_int < 105)	{
 			uA = 1;
-			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			pwmA = (uint16_t) (PWM_STEPS_F * u0 * uA); //takes<2s00ns
 			TIM1->CCR1 = pwmA; //takes<150ns
 			//			SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
 			//			CLEAR_BIT(TIM1->CCMR1, TIM_CCMR1_OC1CE);
@@ -2541,7 +2781,7 @@ void update_pwm(void){
 		}
 		else if  (field_phase_int < 210)	{
 			uB = 1;
-			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
+			pwmB = (uint16_t) (PWM_STEPS_F * u0 * uB); //takes<2s00ns
 			TIM1->CCR2 = pwmB; //takes<150ns
 
 			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
@@ -2549,7 +2789,7 @@ void update_pwm(void){
 		}
 		else if  (field_phase_int < 315)	{
 			uB = 1;
-			pwmB = (uint16_t) (pwm * u0 * uB); //takes<2s00ns
+			pwmB = (uint16_t) (PWM_STEPS_F * u0 * uB); //takes<2s00ns
 			TIM1->CCR2 = pwmB; //takes<150ns
 
 			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
@@ -2557,7 +2797,7 @@ void update_pwm(void){
 		}
 		else if  (field_phase_int < 420)	{
 			uC = 1;
-			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
+			pwmC = (uint16_t) (PWM_STEPS_F * u0 * uC); //takes<2s00ns
 			TIM1->CCR3 = pwmC; //takes<150ns
 
 			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
@@ -2565,7 +2805,7 @@ void update_pwm(void){
 		}
 		else if  (field_phase_int < 525)	{
 			uC = 1;
-			pwmC = (uint16_t) (pwm * u0 * uC); //takes<2s00ns
+			pwmC = (uint16_t) (PWM_STEPS_F * u0 * uC); //takes<2s00ns
 			TIM1->CCR3 = pwmC; //takes<150ns
 
 			CLEAR_BIT(TIM1->CCMR1, TIM_CR2_OIS1N);
@@ -2573,7 +2813,7 @@ void update_pwm(void){
 		}
 		else 	{
 			uA = 1;
-			pwmA = (uint16_t) (pwm * u0 * uA); //takes<2s00ns
+			pwmA = (uint16_t) (PWM_STEPS_F * u0 * uA); //takes<2s00ns
 			TIM1->CCR1 = pwmA; //takes<150ns
 
 			SET_BIT(TIM1->CCMR1, TIM_CR2_OIS2N);
@@ -2588,14 +2828,173 @@ void update_pwm(void){
 
 }
 
+
+
+////called every second step of the quadrature encoder was used for pwm update in past
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){ // see https://community.st.com/s/question/0D50X00009XkWUpSAN/encoder-mode-and-rotary-encoder
+
+	if(htim->Instance == TIM8){
+		omegaEnc_missing_update_counter = 0;
+
+		static float omegaEnc_last = 0.0f;
+		static uint32_t last_t = 0;
+		register uint32_t t_now = TIM2->CNT;
+		register int32_t delta_t;
+		if (t_now > last_t){
+			delta_t = t_now - last_t;
+		}
+		else {
+			delta_t = t_now - last_t; //todo correct statement
+		}
+
+		if (delta_t > 84000){
+			register int32_t EncVal = TIM8->CNT;
+			register int32_t delta_EncVal = (int32_t)EncVal - (int32_t)last_EncVal_omegaEnc;
+			last_EncVal_omegaEnc = EncVal;
+			last_t = t_now;
+
+			delta_EncVal = encoder_jump_comp(delta_EncVal);
+
+			omegaEnc =  omega_division(delta_EncVal, delta_t);
+
+			lp_omegaEnc = (1.0f - LP_OMEGA_ENC_CONST) * lp_omegaEnc + LP_OMEGA_ENC_CONST * omegaEnc;
+
+			omegaEncDot = (omegaEnc - omegaEnc_last) / (float)delta_t * 84000000.0f;
+
+			lp_omegaEncDot = (1.0f - LP_OMEGA_ENC_DOT_CONST) * lp_omegaEncDot + LP_OMEGA_ENC_DOT_CONST * omegaEncDot;
+			//alternative todo calc from t directly to save compute
+
+			omegaEnc_last = omegaEnc;
+			// todo must be set to 0 if not updated for long otherwise it maintains value from last update forever
+		}
+
+	}
+}
+
+/*
+ * calculates the angular velocity omega from diff in EncVal devided by time passed measured with Timer 2
+ */
+
+void calc_omega(void){
+	// TODO check KV; I find 80Hz at 25V this would be 192kV arrg
+	static uint32_t last_t = 0;
+	register uint32_t t_now = TIM2->CNT;
+	register int32_t delta_t;
+	if (t_now > last_t){
+		delta_t = t_now - last_t;
+	}
+	else {
+		delta_t = t_now - last_t; //todo correct statement
+	}
+	last_t = t_now;
+
+	// --- get change of EncVal since last pass
+	register int32_t EncVal = TIM8->CNT;
+	register int32_t delta_EncVal = (int32_t)EncVal - (int32_t)last_EncVal_omega;
+	last_EncVal_omega = EncVal;
+
+	delta_EncVal = encoder_jump_comp(delta_EncVal);
+
+	omega =  omega_division(delta_EncVal, delta_t);//[steps/counts] // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO omega seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
+	lp_omega = (1.0f - LP_OMEGA_CONST) * lp_omega + LP_OMEGA_CONST * omega;
+
+}
+
+float omega_division(int32_t delta_EncVal, int32_t delta_t){
+	return PI2 * 84000000.0f / ENC_STEPS_F * (float)(delta_EncVal) / (float)delta_t;
+}
+
+int32_t encoder_jump_comp(int32_t delta_EncVal){
+	if (delta_EncVal > ENC_STEPS_HALF){ // if jump is more than a half rotation it's most likely the 0 crossing
+		return delta_EncVal - ENC_STEPS;
+	}
+	else if (delta_EncVal < -ENC_STEPS_HALF){
+		return delta_EncVal + ENC_STEPS;
+	}
+	else {
+		return delta_EncVal;
+	}
+}
+
+/*********************************************************************************************
+ *
+ *  ###  ###  ###
+ *  #  #  #   #  #
+ *  ###   #   #  #
+ *  #     #   #  #
+ *  #    ###  ###
+ *
+ *********************************************************************************************
+ */
+
+
 void fast_control_task(void){
-	val_STRAIN0 = acc_STRAIN0 >> ANALOG_SAMPLES_BITSHIFT;
+#if DB_TIMING
+	DB2H;
+#endif
+
+	// --- averaging the quantities read in pwm update
+	fast_STRAIN0 = acc_STRAIN0 >> ANALOG_SAMPLES_BITSHIFT;
 	acc_STRAIN0 = 0;
+	fast_Vbus = acc_Vbus >> ANALOG_SAMPLES_BITSHIFT;
+	acc_Vbus = 0;
+#if DIFF_FORCE
+	fast_STRAIN1 = acc_STRAIN1 >> ANALOG_SAMPLES_BITSHIFT;
+	acc_STRAIN1 = 0;
+#endif
 
-	calc_v();
+	fast_I_tot = sqrt(acc_I_tot_squared/(float)ANALOG_SAMPLES_N);
+	acc_I_tot_squared = 0.0f;
+	fast_u0 = acc_u0 / (float)ANALOG_SAMPLES_N;
+	acc_u0 = 0.0f;
+
+	// --- deriving quantities
+	fast_P_consumed = fast_I_tot * fast_u0 * (float)fast_Vbus * CONVERT_VBUS_INT2V  / WANKEL_ADVANTAGE;
+
+	// sw current limit switch off
+	static uint32_t I_lim_exceeded_counter = 0;
+	if (fast_I_tot > I_LIM){
+		I_lim_exceeded_counter++;
+	}
+	else {
+		I_lim_exceeded_counter = 0;
+	}
+	if (I_lim_exceeded_counter > I_LIM_MAX_COUNT){
+		sw_enable_pwm = false;
+	}
+
+	//lp_ESC_TEMP = (uint32_t)((1.0f - LP_TEMP) * (float)lp_ESC_TEMP + LP_TEMP * (float)HAL_ADCEx_InjectedGetValue (&hadc1, RANK_T));
+	//lp_MOT_TEMP = (uint32_t)((1.0f - LP_TEMP) * (float)lp_MOT_TEMP + LP_TEMP * (float)HAL_ADCEx_InjectedGetValue (&hadc2, RANK_T));
+
+	//lp_ESC_TEMP = (1.0f - LP_TEMP) * lp_ESC_TEMP + LP_TEMP * (float)HAL_ADCEx_InjectedGetValue (&hadc1, RANK_T);
+	//lp_MOT_TEMP = (1.0f - LP_TEMP) * lp_MOT_TEMP + LP_TEMP * (float)HAL_ADCEx_InjectedGetValue (&hadc2, RANK_T);
+
+	static uint32_t analog_samples_av_counter = 0;
+	if (analog_samples_av_counter < ANALOG_SAMPLES_AV_N){
+		acc_ESC_TEMP += HAL_ADCEx_InjectedGetValue (&hadc1, RANK_T);
+		acc_MOT_TEMP += HAL_ADCEx_InjectedGetValue (&hadc2, RANK_T);
+		analog_samples_av_counter++;
+	}
+	else {
+		av_ESC_TEMP = acc_ESC_TEMP >> ANALOG_SAMPLES_AV_BITSHIFT;
+		acc_ESC_TEMP = 0;
+		av_MOT_TEMP = acc_MOT_TEMP >> ANALOG_SAMPLES_AV_BITSHIFT;
+		acc_MOT_TEMP = 0;
+		analog_samples_av_counter = 0;
+	}
+
+	calc_omega();
+
+	// --- correct for missing update in omecaEnc for very small omega
+	if (omegaEnc_missing_update_counter > OMEGAENC_MISSING_UPDATE_MAX){
+		omegaEnc = 0.0f;
+		omegaEncDot = 0.0f;
+	}
+	omegaEnc_missing_update_counter ++;
 
 
-	if (mode_of_control == 1){
+	if (control_mode == position_control){
 		float t = (float)((TIM5->CNT - last_tim5_cnt) / 100) / 1000.0f;
 
 		int32_t desired_EncVal = pos_offset + pos_amp * sin(6.28f * pos_freq * t);
@@ -2610,7 +3009,7 @@ void fast_control_task(void){
 		//		}
 
 
-		int32_t Enc_Val_total = EncVal + rotation_counter * ENC_STEPS;
+		int32_t Enc_Val_total = (int32_t)TIM8->CNT + rotation_counter * ENC_STEPS;
 		float raw_amp = (float)(Enc_Val_total - desired_EncVal) * P_gain; //oscillates for P_gain > 0.005f
 		float raw_amp_check = raw_amp;
 		//		if (raw_amp < 0.0f){
@@ -2645,10 +3044,13 @@ void fast_control_task(void){
 	else{
 		last_tim5_cnt = TIM5->CNT;
 	}
-
+#if DB_TIMING
+	DB2L;
+#endif
 }
 
 void slow_control_task(void){
+	//can communication update
 
 }
 
@@ -2701,10 +3103,10 @@ void keyboard_intake(void){
 		playSound( 1, 20, 100);
 		break;
 	case 'u':
-		stiffness += 0.001f;
+		stiffness += 0.0001f;
 		break;
 	case 'j':
-		stiffness -= 0.001f;
+		stiffness -= 0.0001f;
 		break;
 	case 'p':
 		//print2uart = false;
@@ -2725,10 +3127,10 @@ void keyboard_intake(void){
 		step_through_pwm_percent();
 		break;
 	case 'i':
-		mode_of_control = 1;
+		control_mode = position_control;
 		break;
 	case 'k':
-		mode_of_control = 0;
+		control_mode = voltage_control;
 		amp = 0.05f;
 		break;
 
@@ -2746,11 +3148,11 @@ void keyboard_intake(void){
 		pos_freq *= 0.5f;
 		break;
 	case 'C':
-		if (CONVERT){
-			CONVERT = 0;
+		if (convert2SI){
+			convert2SI = 0;
 		}
 		else {
-			CONVERT = 1;
+			convert2SI = 1;
 		}
 		break;
 	case 'R':
@@ -2771,13 +3173,13 @@ void keyboard_intake(void){
 		P_gain *= 0.5f;
 		break;
 	case 'T':
-		control_method = sinusoidal;
+		current_mode = sinusoidal;
 		break;
 	case 'G':
-		control_method = trapezoidal;
+		current_mode = trapezoidal;
 		break;
 	case 'B':
-		control_method = freerun;
+		current_mode = freerun;
 		break;
 	case 'L':
 		explore_limits();
@@ -2791,17 +3193,21 @@ void keyboard_intake(void){
 		calc_lookup(lookup);
 		break;
 	case 'm':
-		generic_gain *= 2;
+		generic_fac *= 2.0f;
 		break;
 	case 'n':
-		generic_gain *= 0.5f;
+		generic_fac *= 0.5f;
 		break;
 	case 'v':
-		generic_n += PI/6;
+		generic_add += 1.0f;
 		break;
 	case 'b':
-		generic_n -= PI/6;
+		generic_add -= 1.0f;
 		break;
+	case 'Z':
+		FOC_enabled = !FOC_enabled;
+		break;
+
 
 	default:
 		ch='.';
@@ -2810,76 +3216,124 @@ void keyboard_intake(void){
 }
 
 void print_prep_task(int fast_control_task_counter){
+#if DB_TIMING
+	DB2H;
+	DB2L;
+	DB2H;
+#endif
 
 	int pos = strlen(buf);
 	int left  = BUF_LEN - pos;
-	int n;
-#define ADD_VAL(fmt, val)                 \
-		n = snprintf(buf+pos, left, fmt, val);  \
-		pos += n;                               \
-		left -= n;
+	int leftt;
+	int nn;
+#define ADD_VAL(fmt, val)                    \
+		nn = snprintf(buf+pos, left, fmt, val);  \
+		pos += nn;                               \
+	  left -= nn;
+
 
 	switch (fast_control_task_counter){
 		case 0:
 			sprintf(buf, "tx: %c %4d %4d %4d %4d ", ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3]);//70000ns
 			break;
 		case 1:
-			ADD_VAL(" p0:%4.2f", phase0);//70000ns
+			ADD_VAL(" a:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_U));
+			ADD_VAL(" b:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_U));
+			ADD_VAL(" c:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_U));
+			//ADD_VAL(" p0:%4.2f", phase0);
 			break;
 		case 2:
-			ADD_VAL(" ps:%4.2f", phase_shift);//70000ns f takes much longer than int
+			//ADD_VAL(" ps:%4.2f", phase_shift);
+			ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
 			break;
 		case 3:
-			ADD_VAL(" a:%4.2f", amp);//70000ns f takes much longer than int
+			//ADD_VAL(" a:%4.2f", amp);
+			//ADD_VAL(" a:%5d", (int)(amp*100.0f));
+			ADD_VAL(" A:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I)- (int)A_mean);
+			ADD_VAL(" B:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I)- (int)B_mean);
+			ADD_VAL(" C:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I)- (int)C_mean);
 			break;
 		case 4:
-			ADD_VAL(" E:%5d", EncVal);//70000ns f takes much longer than int
+			//ADD_VAL(" v:%6.2f", omega);
+			ADD_VAL(" o:%5d", (int)(omega*100.0f));
+			ADD_VAL(" oE:%5d", (int)(omegaEnc*100.0f));
+			ADD_VAL(" od:%5d", (int)(omegaEncDot*1.0f));
+
+			//sprintf(buf_add, " E:%5d", (int)TIM8->CNT); strcat(buf, buf_add);
 			break;
 		case 5:
-			ADD_VAL(" c:%5d", rotation_counter);//70000ns f takes much longer than int
+			//ADD_VAL(" c:%5d", (int)rotation_counter);
+			ADD_VAL(" s:%5d", (int)(stiffness*10000.0f));
 			break;
 		case 6:
-			ADD_VAL(" v:%6.2f", vel);//70000ns f takes much longer than int
 			break;
 		case 7:
-			ADD_VAL(" pi:%4d", field_phase_int);//70000ns f takes much longer than int
+			//ADD_VAL(" ADC:%5d", HAL_ADC_GetValue(&hadc1));
+			ADD_VAL(" T_MCU:%5d", adc1_buf[RANK_CONT_TMCU-1]);
+			//ADD_VAL(" Vref:%5d", adc1_buf[RANK_CONT_Vref-1]);
+			//ADD_VAL(" Vbat:%5d", adc1_buf[RANK_CONT_Vbat-1]);
+			ADD_VAL(" Vbus:%5d", adc1_buf[RANK_CONT_Vbus-1]);
+			ADD_VAL(" fVbus:%5d", fast_Vbus);
+
+
+			//ADD_VAL(" pi:%4d", field_phase_int);
 			break;
 		case 8:
-			ADD_VAL(" FOC:%4.2f", FOC_phase_shift);//70000ns f takes much longer than int
+			ADD_VAL(" dc:%4d", (int)(direct_component*100.0f));
+			ADD_VAL(" qc:%4d", (int)(quadrature_component*100.0f));
+			ADD_VAL(" FOC:%4d", (int)(FOC_phase_shift*100.0f));
 			break;
 		case 9:
-			ADD_VAL(" gg:%6.3f", generic_gain);//70000ns f takes much longer than int
+			ADD_VAL(" gf:%4d", (int)(generic_fac*100.0f));
 			break;
 		case 10:
-			ADD_VAL(" gn:%6.3f", generic_n);//70000ns f takes much longer than int
+			ADD_VAL(" ga:%4d", (int) generic_add);
 			break;
 		case 11:
-			if (CONVERT){
-				float SO0 = ((float)val_I - 2040.0f) * 0.134f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
-				float SO1 = ((float)val_SO1 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
-				float SO2 = ((float)val_SO2 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
-				sprintf(buf_add, " I:%5.2fA SO1:%5.2fA SO2:%5.2fA", SO0, SO1, SO2); strcat(buf, buf_add);
+			ADD_VAL(" P:%5d", (int) (fast_P_consumed*100.0f));
 
-				float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5f); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
-				sprintf(buf_add, " It:%5.2fA", I_tot); strcat(buf, buf_add);
+			if (convert2SI){
+				//float SO0 = ((float)val_I - 2040.0f) * 0.134f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+				//float SO1 = ((float)val_SO1 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
+				//float SO2 = ((float)val_SO2 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+				//sprintf(buf_add, " I:%5.2fA SO1:%5.2fA SO2:%5.2fA", SO0, SO1, SO2); strcat(buf, buf_add);
+
+				//float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5f); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
+				//sprintf(buf_add, " It:%5.2fA", I_tot); strcat(buf, buf_add);
 			}
 			else{
-				sprintf(buf_add, " I:%4d SO1:%4d SO2:%4d", val_I, val_SO1, val_SO2); strcat(buf, buf_add);
+				//sprintf(buf_add, " I:%4d SO1:%4d SO2:%4d", val_I, val_SO1, val_SO2); strcat(buf, buf_add);
 			}
 			break;
 		case 12:
-			ADD_VAL(" ps:%4.2f", phase_shift);//70000ns f takes much longer than int
+			ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
 			break;
 		case 13:
-			if (val_TEMP > 1900){
+			ADD_VAL(" TE:%4d", (int) av_ESC_TEMP);
+			break;
+		case 14:
+			ADD_VAL(" It:%4.2f", fast_I_tot);
+			break;
+		case 15:
+			ADD_VAL(" F0:%4d", (int) fast_STRAIN0);
+			break;
+		case 16:
+			ADD_VAL(" ps:%4.2f", phase_shift);
+			break;
+
+
+
+
+		case 19:
+			if (av_ESC_TEMP > 1900){
 				sprintf(buf_add, "* >50C on ESC"); strcat(buf, buf_add);
 			}
 
-			if (val_M0_TEMP > 1900){
+			if (av_MOT_TEMP > 1900){
 				sprintf(buf_add, "* >50C on MOTOR"); strcat(buf, buf_add);
 			}
 
-			if (val_STRAIN0 < 2170){
+			if (fast_STRAIN0 < 2170){
 				sprintf(buf_add, "* -100N force"); strcat(buf, buf_add);
 			}
 			break;
@@ -2891,7 +3345,7 @@ void print_prep_task(int fast_control_task_counter){
 
 #if 0
 
-	sprintf((char*)buf_add, " dcl:%6.2f qcl:%6.2f", direct_component_lp, quadrature_component_lp); strcat(buf, buf_add);
+	sprintf(buf_add, " dcl:%6.2f qcl:%6.2f", direct_component_lp, quadrature_component_lp); strcat(buf, buf_add);
 
 	sprintf((char*)buf_add, " dc:%6.2f qc:%6.2f", direct_component, quadrature_component); strcat(buf, buf_add);
 
@@ -2905,7 +3359,7 @@ void print_prep_task(int fast_control_task_counter){
 
 	sprintf((char*)buf_add, " A:%4d B:%4d C:%4d", val_ASENSE, val_BSENSE, val_CSENSE); strcat(buf, buf_add);
 
-	if (CONVERT){
+	if (convert2SI){
 		float STRAIN0 = ((float)val_STRAIN0 - 2235.0f) * 1.678f; // 3.3/4095/0.00048[gain see page 114] = 1.678
 		float STRAIN1 = ((float)val_STRAIN1 - 2235.0f) * 1.678f;
 		sprintf((char*)buf_add, " S0:%5.1fN S1:%4dN", STRAIN0, val_STRAIN1); strcat(buf, buf_add);
@@ -2927,7 +3381,7 @@ void print_prep_task(int fast_control_task_counter){
 
 	//			sprintf((char*)buf, "%c# AI %d %d %d %d A1 %d %d %d %d %d            \r\n",
 	//								ch, //(int)(amp*100), (int)(phase_shift*100),
-	//								//(int)(stiffness*1000), (int)(1000*av_vel),
+	//								//(int)(stiffness*1000), (int)(1000*lp_omega),
 	//								val_I, val_ASENSE, val_STRAIN0, val_M0_TEMP,
 	//								adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3], adc1_buf[4]);
 	//								//val_SO1, val_BSENSE, val_STRAIN1, val_TEMP, val_SO2, val_CSENSE); //        %d %d %d %d A2 %d %d
@@ -2936,9 +3390,15 @@ void print_prep_task(int fast_control_task_counter){
 	//			buf[150] = '|';
 	//			buf[100] = '.';
 	//			buf[50] = '|';
-	//			buf[100 + max(-50, min(50, (int)av_vel))] = 'v';
+	//			buf[100 + max(-50, min(50, (int)lp_omega))] = 'v';
 
 	//2L //1ms = 1000000ns
+#endif
+
+#if DB_TIMING
+	DB2L;
+	DB2H;
+	DB2L;
 #endif
 
 }
@@ -3089,7 +3549,7 @@ void timing_party(){
 		e13 = e13 + PWM_1PERCENT;//30
 		DB1L;//110
 		e13 = e11 + e12; //40
-		e13 = e13 + skip_update; //100 <<<<<<<<getting a variable takes much longer than having define !!!!
+		e13 = e13 + rotation_counter; //100 <<<<<<<<getting a variable takes much longer than having define !!!!
 
 		DB1L;//180
 		DB1H;
@@ -3315,12 +3775,7 @@ void timing_party(){
 
 #if 0
 
-////called every second step of the quadrature encoder was used for pwm update in past
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){ // see https://community.st.com/s/question/0D50X00009XkWUpSAN/encoder-mode-and-rotary-encoder
 
-	if(htim->Instance == TIM8){
-	}
-}
 
 // --- HEARTBEAT (1ms)  of the microcontroller - was used for position control
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
@@ -3351,6 +3806,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 // -----------------------------------------------------------
 //--- OUTTAKES
 // -----------------------------------------------------------
+
+
+
+//#define USE_HAL_TIM_REGISTER_CALLBACKS 1    // TODO work out other callback for encoder
 
 //void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
 //void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
@@ -3425,7 +3884,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 //					FOC_phase_shift = -0.3f;
 //				}
 //
-//				if (abs(av_vel) < 1){
+//				if (abs(lp_omega) < 1){
 //					FOC_phase_shift = 0.0f;
 //					//direct_component_integral = 0.0f;
 //				}
@@ -3483,7 +3942,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 //
 //	int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
 //
-//	//float lp =  1.0f / 40000.0f / 10.0f * av_vel * (float)N_POLES; //making the 1/e time 10 times the pass of a pole
+//	//float lp =  1.0f / 40000.0f / 10.0f * lp_omega * (float)N_POLES; //making the 1/e time 10 times the pass of a pole
 //	//float lp =  0.00003f; // for 2Hz
 //	float lp =  0.0003f; // for 2Hz
 //	direct_component = (1-lp) * direct_component + lp * (cos_contribution * val_I);
@@ -3501,7 +3960,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 //		FOC_phase_shift = -0.3f;
 //	}
 //
-//	if (av_vel < 6 && av_vel > -6){
+//	if (lp_omega < 6 && lp_omega > -6){
 //		FOC_phase_shift = 0.0f;
 //		direct_component_integral = 0.0f;
 //	}
@@ -3574,31 +4033,31 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
-	/* USER CODE BEGIN Error_Handler_Debug */
+  /* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 
-	/* USER CODE END Error_Handler_Debug */
+  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 { 
-	/* USER CODE BEGIN 6 */
+  /* USER CODE BEGIN 6 */
 	/* User can add his own implementation to report the file name and line number,
      tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-	/* USER CODE END 6 */
+  /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
 
