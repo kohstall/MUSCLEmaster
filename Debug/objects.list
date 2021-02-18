@@ -31,4 +31,5 @@
 "Src/syscalls.o"
 "Src/sysmem.o"
 "Src/system_stm32f4xx.o"
+"Src/utils.o"
 "Startup/startup_stm32f405vgtx.o"

@@ -103,7 +103,6 @@ void Error_Handler(void);
 
 #define USE_HAL_TIM_REGISTER_CALLBACKS 1
 
-#define PI 3.141592
 
 #define min(a,b) \
    ({ __typeof__ (a) _a = (a); \

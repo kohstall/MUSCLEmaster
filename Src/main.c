@@ -150,8 +150,6 @@
 
 #define OMEGAENC_MISSING_UPDATE_MAX 100
 
-#define LP_OMEGA_CONST 0.2f //stiffness mode gets noisy with 1 and maybe too inert with 0.1
-
 #define LP_OMEGA_ENC_DOT_CONST 0.5f
 
 #define LP_OMEGA_ENC_CONST 0.5f
@@ -301,7 +299,7 @@ void step_through_pole_angles(void);
 void step_through_pwm_percent(void);
 void explore_limits(void);
 void set_pwm_off(void);
-void calc_omega(void);
+//void calc_omega(void);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void update_pwm(void);
 void fast_control_task(void);
@@ -357,6 +355,8 @@ float phase0 = 1.2f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define DIFF_FORCE 0
 #define I_LIM 50.0f //amps
 #define I_LIM_MAX_COUNT 100 // max number of encounters in fast loop
+#define VBUS_MAX 30.0f
+#define VBUS_MIN 8.0f
 
 //--ESC_ID = 100; // clavicle yaw
 //float phase0 = -1.232f;  // set to at ABC=0 angle*2*pi/2000*N_poles=angle*0.0220 = (1944-2000)*0.022=-1.232//$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
@@ -387,12 +387,19 @@ current_mode = sinusoidal;
 enum Control_mode {voltage_control = 0, position_control = 1, force_control = 2};
 control_mode = voltage_control;
 
-uint8_t convert2SI=0;
+bool FOC_enabled = true; //<<< choose
+
+bool normal_pwm_update = true;
+
+bool convert2SI = false;
+
+bool print2uart = true;
 
 bool counter0ing_at0crossing = true;
 
-float amp = 0.0f;
 bool sw_enable_pwm = false;
+
+float amp = 0.0f;
 float phase_shift = PI/2.0f ;
 float stiffness = -0.00; // -0.0024 makes motor invisible
 
@@ -401,6 +408,9 @@ float pos_freq = 0.5f;
 float pos_amp_limit = 0.2f;
 int32_t pos_offset = 0;
 float P_gain = 0.0005f;
+
+float generic_fac = 1.0f;
+float generic_add = 0.0f;
 
 /*****************************************************************************
  *                                                                           *
@@ -412,14 +422,14 @@ float P_gain = 0.0005f;
 int32_t init_EncVal;
 int32_t rotation_counter = 0;
 
+int32_t Enc_Val_total_lim_m = 0;
+int32_t Enc_Val_total_lim_p = 0;
+
 int32_t last_EncVal_pwm;
-int32_t last_EncVal_omega;
 int32_t last_EncVal_omegaEnc;
 
 int32_t omegaEnc_missing_update_counter = 0; //reseet in Enc interrupt and incremented in fast_task
 
-float omega = 0.0f;
-float lp_omega = 0.0f;
 float omegaEnc = 0.0f;
 float lp_omegaEnc = 0.0f;
 float omegaEncDot = 0.0;
@@ -431,111 +441,57 @@ uint16_t adc3_buf[ADC3_BUF_LEN];
 
 int32_t pole_phase_int;
 
-float field_phase_shift = 0;
-float field_phase_shift_pihalf = 0;
-uint32_t field_amplitude = 0;
-
-//uint16_t tim12_counter = 5;
-uint32_t tim12_counter = 4000000000;
-
-uint8_t buf_msgs[100];
-uint8_t buf_msg[50];
-
-bool print2uart = true;
-
-uint16_t pole_angles[N_PHASES * N_POLES];
-uint16_t pole_angle_by_amp[20];
-float av_start_angle;
-
-bool normal_operation_enabled = true;
-
-uint8_t wave_mode = 0;
-
-uint8_t mode_of_operation = 0; // 0=startup 1=standard
-//enum mode_of_operation{ STARTUP, STANDARD};
-
-
-int32_t Enc_Val_total_lim_m = 0;
-int32_t Enc_Val_total_lim_p = 0;
-
-uint32_t last_tim5_cnt = 0 ;
-
-
-// --- LOOKUPS
-
-float lookup[210];
-float sin_lookup[628];
-float cos_lookup[628];
-float amp_harmonic = 1.0f;
-
-
-//uint32_t val_I = 0;
-//uint32_t val_ASENSE = 0;
-uint32_t acc_STRAIN0 = 0; //last number refers to rank
-uint32_t fast_STRAIN0 = 0; //last number refers to rank
+uint32_t acc_STRAIN0 = 0;
+uint32_t fast_STRAIN0 = 0;
+uint32_t acc_STRAIN1 = 0;
+uint32_t fast_STRAIN1 = 0;
 uint32_t acc_Vbus = 0;
 uint32_t fast_Vbus = 600;
-//uint32_t lp_ESC_TEMP = 0;
-//float lp_ESC_TEMP = 0.0f;
 uint32_t acc_ESC_TEMP = 0;
 uint32_t av_ESC_TEMP = 0;
-
-//uint32_t val_SO1 = 0;
-//uint32_t val_BSENSE = 0;
-uint32_t acc_STRAIN1 = 0; //last number refers to rank
-uint32_t fast_STRAIN1 = 0;
-//uint32_t lp_MOT_TEMP = 0;
-//float lp_MOT_TEMP = 0.0f;
 uint32_t acc_MOT_TEMP = 0;
 uint32_t av_MOT_TEMP = 0;
-//uint32_t val_VBUS = 0; //TODO this value is not read out correctly - always comes as 0
-
-//uint32_t val_SO2 = 0;
-//uint32_t val_CSENSE = 0;
 
 float acc_I_tot_squared = 0.0f;
 float fast_I_tot = 0.0f;
-
 float acc_u0 = 0.0f;
 float fast_u0 = 0.0f;
 
 float fast_P_consumed = 0.0f;
 
+float FOC_phase_shift = 0.0f;
 
 uint32_t analog_samples_counter = 0;
 uint32_t fast_control_task_counter = 0;
 uint32_t slow_control_task_counter = 0;
 uint32_t prep_counter = 0;
 
-
-
-
-float direct_component = 0.0f;
-float direct_component_lp = 0.0f;
-float quadrature_component = 0.0f;
-float quadrature_component_lp = 0.0f;
 float A_mean= 2040.0f;
-float B_mean= 2005.0f;
-float C_mean= 2005.0f;
-int32_t component_counter = 0;
-int32_t direct_component_sum = 0;
-int32_t quadrature_component_sum = 0;
-
-float FOC_phase_shift = 0.0f;
-
-float generic_fac = 1.0f;
-float generic_add = 0.0f;
-
-float p = 0.0f;
-float a;
-float b;
+float B_mean= 2004.0f;
+float C_mean= 2004.0f;
 
 char ch='.';
 
-char buf[BUF_LEN + 1]; //todo switch to char
-char buf_add[BUF_ADD_LEN + 1];
+int32_t sys_err = 0;
 
-bool FOC_enabled = true;
+/*****************************************************************************
+ *                                                                           *
+ *    LOOKUP TABLES
+ *                                                                           *
+ *****************************************************************************
+ */
+
+float lookup[210];
+float sin_lookup[628];
+float cos_lookup[628];
+
+char buf_msgs[100];
+char buf_msg[50];
+char buf[BUF_LEN + 1];
+char buf_add[BUF_ADD_LEN + 1];
+//uint8_t plot[300];
+
+
 
 /* USER CODE END 0 */
 
@@ -546,6 +502,14 @@ bool FOC_enabled = true;
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+	/*****************************************************************************
+	 *****************************************************************************
+	 ***                                                                       ***
+	 ***    MAIN
+	 ***                                                                       ***
+	 *****************************************************************************
+	 *****************************************************************************
+	 */
 
 	// --- STARTING SERIAL OUTPUT IN TERMINAL
 	//ls /dev/tty*
@@ -554,7 +518,6 @@ int main(void)
 
 	//Drivers/CMSIS/DSP/Include
 	//ARM_MATH_CM4
-
 
 
   /* USER CODE END 1 */
@@ -602,69 +565,77 @@ int main(void)
   MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 
+	/*****************************************************************************
+	 *                                                                           *
+	 *    LOOKUPS
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+
 	calc_lookup(lookup);
 	calc_sin_lookup(sin_lookup);
 	calc_cos_lookup(cos_lookup);
 
 
-	//uint8_t plot[300];
-
-
-	HAL_StatusTypeDef ret;
-
-	int16_t accel16;
-	uint8_t accel8l;
-	uint8_t accel8h;
-
-	// --- SET STATUS LEDS
-	HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1);
-	HAL_TIM_OC_Start(&htim9, TIM_CHANNEL_2);
-
+	/*****************************************************************************
+	 *                                                                           *
+	 *    LEDS
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+	HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1); //todo clean up timers
+	HAL_TIM_OC_Start(&htim9, TIM_CHANNEL_2); //todo check versus pwm
 	HAL_TIM_OC_Start(&htim12, TIM_CHANNEL_1);
 	HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1);
 
-	// --- ENABLE DRV
-	HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, 1); //todo maybe redundant since its also done below
+	int16_t blink_duration = 100;
+	TIM9->CCR1 = blink_duration;
+	TIM9->CCR2 = blink_duration;
+
+	GPIOE->BSRR = GPIO_PIN_4; //switches LD2
+
+	SCB->CPACR |= 0xf00000; //todo understand
 
 
-	SCB->CPACR |= 0xf00000;
-
-	int i=0;
-	uint32_t i_fast = 0;
-	uint32_t i_slow = 0;
-	uint32_t fast2slow = 100;
-
-	int blink_duration = 100;
-
-	// --- MOTOR DRIVER ----------------------------------------------------
-	//EN_GATE
+	/*****************************************************************************
+	 *                                                                           *
+	 *    DRV DRIVER
+	 *                                                                           *
+	 *****************************************************************************
+	 */
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
 	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 	HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_3);
+
 	HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_4);
 
-	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_4);
+	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_4);//todo check OC versus IC
 
-	playSound( 3, 100, 20);
-
+	// --- ENABLE DRV
 	HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, GPIO_PIN_SET);
 
 
-	// --- used for heartbeat of microcontroller
+	/*****************************************************************************
+	 *                                                                           *
+	 *    TIMERS
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+	// todo check timers
 	HAL_TIM_Base_Start_IT(&htim3);
-
-	// --- 32bit timer used to measure time in10mus
 	HAL_TIM_Base_Start(&htim5);
 
-	// --- ADC --------------------------------------
-	ADC_ChannelConfTypeDef adcChannel;
 
 
-
-	// --- I2C2 IMU ------------------------------------------------
+	/*****************************************************************************
+	 *                                                                           *
+	 *    IMU
+	 *                                                                           *
+	 *****************************************************************************
+	 */
 	//see: https://www.youtube.com/watch?v=isOekyygpR8
 
 	//  buf[0] = 0x6B;
@@ -673,6 +644,12 @@ int main(void)
 	//  HAL_Delay(2);
 
 	//b1101000
+	HAL_StatusTypeDef ret;
+
+	int16_t accel16;
+	uint8_t accel8l;
+	uint8_t accel8h;
+
 	char accel_char[20];
 
 	buf[0] = 0x6B; //power register
@@ -734,22 +711,13 @@ int main(void)
 	//
 	//				}
 
-	// --- TIMERS ----------------------------------------------------
-	TIM9->CCR1 = blink_duration;
-	TIM9->CCR2 = blink_duration;
 
-	// --- GPIO ----------------------------------------------------
-
-	GPIOE->BSRR = GPIO_PIN_4; //switches LD2
-
-
-	playSound( 2, 100, 40);
-	playSound( 1, 100, 80);
-	HAL_Delay(100); // So the system stops vibrating
-
-
-
-	// --- ROTATION SENSOR INIT ----------------------------------------------------
+	/*****************************************************************************
+	 *                                                                           *
+	 *    ROTATION SENSOR
+	 *                                                                           *
+	 *****************************************************************************
+	 */
 	HAL_TIM_Encoder_Start_IT(&htim8, TIM_CHANNEL_ALL );
 
 	// --- ROTATION SENSOR SETTINGS ----------------------------------------------------
@@ -759,7 +727,6 @@ int main(void)
 	uint8_t spi_value_8[2];
 
 	//todo UGLY BUG - Ugly FIX: now i just send the init below twice because somehow the communication of the first transaction does not seem to work-- i sse on the MISO signal the lines just pulls up to 0.5fV instead of 3V but it works fine for the next transmission so it gets initialized correctly if i sent it twice
-
 
 
 	// --- set ABI and enable PWM
@@ -818,7 +785,6 @@ int main(void)
 	// --- ROTATION SENSOR 0 POINT SETTING ----------------------------------------------------
 	//angle &= AS_DATA_MASK;
 	init_EncVal = (uint16_t) ((float)angle /16384.0f * ENC_STEPS_F);
-	last_EncVal_omega = init_EncVal;
 	last_EncVal_omegaEnc = init_EncVal;
 	last_EncVal_pwm = init_EncVal;
 	TIM8->CNT = init_EncVal;
@@ -831,46 +797,35 @@ int main(void)
 	//	TIM1->CCR1 = 0;
 	//	phase = (float) EncVal * 0.02199f ;
 
-	// --- UART DMA
+	/*****************************************************************************
+	 *                                                                           *
+	 *    UART DMA
+	 *                                                                           *
+	 *****************************************************************************
+	 */
 	HAL_DMA_RegisterCallback(&hdma_usart3_tx, HAL_DMA_XFER_CPLT_CB_ID, &DMAUSARTTransferComplete);
 
 
-
-	//HAL_TIM_RegisterCallback(&htim8, HAL_TIM_IC_CAPTURE_CB_ID, &EncoderStepCallback );
-
-
-	//HAL_ADC_Start(&hadc1);
-	//HAL_ADC_Start(&hadc2);
-	//HAL_ADC_Start(&hadc3);
-	// --- ADC DMA
-	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, ADC1_BUF_LEN); // this is the only one working // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
+	/*****************************************************************************
+	 *                                                                           *
+	 *    ADC DMA and INJECTED
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, ADC1_BUF_LEN); // the length must be multiple of channels otherwise I observed mess in order - even like 2 of one and lots of mess
 	HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, ADC2_BUF_LEN); // TODO enabling this only leads to no change all values stay zero
 	HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_buf, ADC3_BUF_LEN); // TODO enabling this breaks transmission entirely
 
-
 	HAL_ADCEx_InjectedStart (&hadc1);
 	HAL_ADCEx_InjectedStart (&hadc2);
-	HAL_ADCEx_InjectedStart (&hadc3); // again this seems to break  the full loop
+	HAL_ADCEx_InjectedStart (&hadc3);
 
-
-	//
-	//
-
-	// --- WELCOME
-	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d init_EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
-			angle, init_EncVal ,
-			angle, init_EncVal );
-	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
-
-	HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
-
-
-	//HAL_TIM_Base_Start(&htim6);
-	//HAL_TIM_Base_Start(&htim3);
-	//HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_1);
-
-	//--- CAN interface
+	/*****************************************************************************
+	 *                                                                           *
+	 *    CAN COMMUNICATION
+	 *                                                                           *
+	 *****************************************************************************
+	 */
 	pHeader.DLC =6;
 	pHeader.IDE = CAN_ID_STD;
 	pHeader.RTR = CAN_RTR_DATA;
@@ -889,7 +844,20 @@ int main(void)
 	HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
 
 
-	// --- SYSTEM CALIBRATION ----------------------------------------------------
+	/*****************************************************************************
+	 *                                                                           *
+	 *    SYSTEM CALIBRATION
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+
+	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d init_EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
+			angle, init_EncVal ,
+			angle, init_EncVal );
+	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+
+	HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
 
 	// --- find current sense offsets
 	//float acc_I_A = 0.0f;
@@ -913,17 +881,54 @@ int main(void)
 	HAL_Delay(10);
 #endif
 
+	/*****************************************************************************
+	 *                                                                           *
+	 *    SYSTEM CHECK
+	 *                                                                           *
+	 *****************************************************************************
+	 */
 
-	// --- SYSTEM CHECK ----------------------------------------------------
+	if (adc1_buf[RANK_CONT_Vbus-1]*CONVERT_VBUS_INT2V > VBUS_MAX){
+		sys_err |= 1 << 0U;
+	}
+	if (adc1_buf[RANK_CONT_Vbus-1]*CONVERT_VBUS_INT2V < VBUS_MIN){
+		sys_err |= 1 << 1U;
+	}
 
-	//adc1_buf[RANK_CONT_Vbus-1]
-	//adc1_buf[RANK_CONT_Vbus-1]
-	//fast_Vbus
+	if (A_mean < 2030.0f || A_mean > 2060.0f ||
+			B_mean < 1990.0f || B_mean > 2020.0f ||
+			C_mean < 1990.0f || C_mean > 2020.0f ){
+		sys_err |= 1 << 2U;
+	}
 
-//if (A_mean>1500.0f )
 
-	// --- SYSTEM START ----------------------------------------------------
-	mode_of_operation = 1;
+	/*****************************************************************************
+	 *                                                                           *
+	 *    WELCOME
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+
+	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\n angle: %u EncVal %u \r\n error %d \r\n",
+			angle, init_EncVal ,
+			sys_err);
+	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
+
+	HAL_Delay(10); //some delay needed othwise the first print statement in while will overwrite
+
+
+	/*****************************************************************************
+	 *                                                                           *
+	 *    SYSTEM START
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+	playSound( 3, 100, 20);
+	playSound( 2, 100, 40);
+	playSound( 1, 100, 80);
+	HAL_Delay(100); // So the system stops vibrating
+
 	sw_enable_pwm = true;
 	amp = 0.01f;
 
@@ -933,6 +938,14 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 	while (1)
 	{
+		/*****************************************************************************
+		 *****************************************************************************
+		 ***                                                                       ***
+		 ***    WHILE
+		 ***                                                                       ***
+		 *****************************************************************************
+		 *****************************************************************************
+		 */
 
 		// --- calling fast control task
 		if (analog_samples_counter >= ANALOG_SAMPLES_N){
@@ -2265,8 +2278,10 @@ void set_pwm_off(void){
 	TIM1->CCR3 = 0;
 }
 
+float av_start_angle;
 void step_through_pole_angles(void){
-	normal_operation_enabled = false;
+	uint16_t pole_angles[N_PHASES * N_POLES];
+	normal_pwm_update = false;
 	set_pwm_off();
 	HAL_Delay(100);
 	uint32_t step_through_amp = 5 * PWM_1PERCENT;
@@ -2318,7 +2333,7 @@ void step_through_pole_angles(void){
 		}
 	}
 	set_pwm_off();
-	normal_operation_enabled = true;
+	normal_pwm_update = true;
 
 	float sum = 0.0f;
 	float enc_steps_per_A2B = (float)ENC_STEPS / (float)(N_POLES * N_PHASES);
@@ -2343,7 +2358,8 @@ void step_through_pole_angles(void){
 }
 
 void step_through_pwm_percent(void){
-	normal_operation_enabled = false;
+	uint16_t pole_angle_by_amp[20];
+	normal_pwm_update = false;
 	set_pwm_off();
 	HAL_Delay(100);
 	for (uint8_t percent = 0; percent < 10 ; percent++){
@@ -2352,7 +2368,7 @@ void step_through_pwm_percent(void){
 		pole_angle_by_amp[percent]=TIM8->CNT;
 	}
 	set_pwm_off();
-	normal_operation_enabled = true;
+	normal_pwm_update = true;
 }
 
 void explore_limits(void){
@@ -2397,7 +2413,7 @@ void playSound(uint32_t periode, uint32_t volume, uint32_t cycles){
 	// TODO disable interrupt for the duration of sound
 	//HAL_NVIC_DisableIRQ(TIM8_UP_TIM13_IRQn);
 	//HAL_Delay(1000);
-	normal_operation_enabled = false;
+	normal_pwm_update = false;
 	set_pwm_off();
 	HAL_Delay(10);
 
@@ -2410,7 +2426,7 @@ void playSound(uint32_t periode, uint32_t volume, uint32_t cycles){
 		HAL_Delay(periode);
 	}
 	set_pwm_off();
-	normal_operation_enabled = true;
+	normal_pwm_update = true;
 
 	//HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 }
@@ -2422,6 +2438,7 @@ void calc_lookup(float *lookup){
 		lookup[i] = 0.5773f * (cos((float)i/100.0f) + cos((float)i/100.0f-1.047f));
 
 		// --- harmonic
+		//float amp_harmonic = 1.0f;
 		//lookup[i] = 0.5773f * (cos((float)i/100.0f)       + amp_harmonic * cos( (float)i/100.0f       * 3.0f)    +  cos((float)i/100.0f-1.047f) + amp_harmonic * cos(((float)i/100.0f-1.047f)* 3.0f)) ;// the harmonic tends to fully cancel out
 
 		// --- power law
@@ -2534,9 +2551,6 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim){
 	pole_phase_int = (int)((PI2 * N_POLES / ENC_STEPS * (float) EncVal - phase0 + PI2) * 100.0f) % 628 ; //400ns when consolidated in one line
 
 
-
-
-
 	register int32_t A = HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I);//500ns
 	register int32_t B = HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I);//500ns
 	register int32_t C = HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I);//500ns
@@ -2559,6 +2573,15 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim){
 	}//200ns when not entering presumably
 
 	if (FOC_enabled){
+
+		register float a;
+		register float b;
+
+		register float direct_component = 0.0f;
+		register float quadrature_component = 0.0f;
+
+		static float direct_component_lp = 0.0f;
+		static float quadrature_component_lp = 0.0f;
 
 		//	register float mean_lp = 0.00001f;
 		//      A_mean = (1-mean_lp) * A_mean + mean_lp * A;
@@ -2607,10 +2630,10 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim){
 			FOC_phase_shift = -FOC_PHASE_LIM;
 		}//350ns for checks
 
-	//	if (abs(lp_omega) < 1.0f){
-	//		FOC_phase_shift = 0.0f;
-	//		direct_component_lp_integral = 0.0f;
-	//	}//220ns
+		//	if (abs(lp_omega) < 1.0f){
+		//		FOC_phase_shift = 0.0f;
+		//		direct_component_lp_integral = 0.0f;
+		//	}//220ns
 	}
 	else {
 		FOC_phase_shift = 0.1f;//empirical good mean of correction
@@ -2686,6 +2709,13 @@ void update_pwm(void){
 	register uint16_t pwmB = 0;
 	register uint16_t pwmC = 0;
 
+	if (!normal_pwm_update){
+#if DB_TIMING
+		DB1L;
+#endif
+		return;
+	}
+
 	if (current_mode != freerun ){
 		if (current_mode == sinusoidal ){
 
@@ -2749,18 +2779,16 @@ void update_pwm(void){
 		pwmC = (uint16_t) (PWM_STEPS_F * u0 * uC); //180ns
 
 		// --- send out PWM pulses 0...2048
-		if (normal_operation_enabled){
-			TIM1->CCR1 = pwmA; //takes<150ns
-			if (INVERT){
-				TIM1->CCR3 = pwmB; //takes<150ns
-				TIM1->CCR2 = pwmC; //takes<150ns
-			}
-			else {
-				TIM1->CCR2 = pwmB; //takes<150ns
-				TIM1->CCR3 = pwmC; //takes<150ns
-			}
 
-		}//300ns
+		TIM1->CCR1 = pwmA; //takes<150ns
+		if (INVERT){
+			TIM1->CCR3 = pwmB; //takes<150ns
+			TIM1->CCR2 = pwmC; //takes<150ns
+		}
+		else {
+			TIM1->CCR2 = pwmB; //takes<150ns
+			TIM1->CCR3 = pwmC; //takes<150ns
+		}//300ns for both
 	}
 
 	else{ // NOTE this mode is still experimental
@@ -2872,34 +2900,6 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){ // see https://communi
 	}
 }
 
-/*
- * calculates the angular velocity omega from diff in EncVal devided by time passed measured with Timer 2
- */
-
-void calc_omega(void){
-	// TODO check KV; I find 80Hz at 25V this would be 192kV arrg
-	static uint32_t last_t = 0;
-	register uint32_t t_now = TIM2->CNT;
-	register int32_t delta_t;
-	if (t_now > last_t){
-		delta_t = t_now - last_t;
-	}
-	else {
-		delta_t = t_now - last_t; //todo correct statement
-	}
-	last_t = t_now;
-
-	// --- get change of EncVal since last pass
-	register int32_t EncVal = TIM8->CNT;
-	register int32_t delta_EncVal = (int32_t)EncVal - (int32_t)last_EncVal_omega;
-	last_EncVal_omega = EncVal;
-
-	delta_EncVal = encoder_jump_comp(delta_EncVal);
-
-	omega =  omega_division(delta_EncVal, delta_t);//[steps/counts] // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO omega seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
-	lp_omega = (1.0f - LP_OMEGA_CONST) * lp_omega + LP_OMEGA_CONST * omega;
-
-}
 
 float omega_division(int32_t delta_EncVal, int32_t delta_t){
 	return PI2 * 84000000.0f / ENC_STEPS_F * (float)(delta_EncVal) / (float)delta_t;
@@ -2984,7 +2984,7 @@ void fast_control_task(void){
 		analog_samples_av_counter = 0;
 	}
 
-	calc_omega();
+	//calc_omega();
 
 	// --- correct for missing update in omecaEnc for very small omega
 	if (omegaEnc_missing_update_counter > OMEGAENC_MISSING_UPDATE_MAX){
@@ -2993,8 +2993,9 @@ void fast_control_task(void){
 	}
 	omegaEnc_missing_update_counter ++;
 
-
+	static uint32_t last_tim5_cnt = 0 ;
 	if (control_mode == position_control){
+
 		float t = (float)((TIM5->CNT - last_tim5_cnt) / 100) / 1000.0f;
 
 		int32_t desired_EncVal = pos_offset + pos_amp * sin(6.28f * pos_freq * t);
@@ -3149,10 +3150,10 @@ void keyboard_intake(void){
 		break;
 	case 'C':
 		if (convert2SI){
-			convert2SI = 0;
+			convert2SI = false;
 		}
 		else {
-			convert2SI = 1;
+			convert2SI = true;
 		}
 		break;
 	case 'R':
@@ -3184,14 +3185,7 @@ void keyboard_intake(void){
 	case 'L':
 		explore_limits();
 		break;
-	case 'I':
-		amp_harmonic += 0.1f;
-		calc_lookup(lookup);
-		break;
-	case 'K':
-		amp_harmonic -= 0.1f;
-		calc_lookup(lookup);
-		break;
+
 	case 'm':
 		generic_fac *= 2.0f;
 		break;
@@ -3229,118 +3223,117 @@ void print_prep_task(int fast_control_task_counter){
 #define ADD_VAL(fmt, val)                    \
 		nn = snprintf(buf+pos, left, fmt, val);  \
 		pos += nn;                               \
-	  left -= nn;
+		left -= nn;
 
 
 	switch (fast_control_task_counter){
-		case 0:
-			sprintf(buf, "tx: %c %4d %4d %4d %4d ", ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3]);//70000ns
-			break;
-		case 1:
-			ADD_VAL(" a:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_U));
-			ADD_VAL(" b:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_U));
-			ADD_VAL(" c:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_U));
-			//ADD_VAL(" p0:%4.2f", phase0);
-			break;
-		case 2:
-			//ADD_VAL(" ps:%4.2f", phase_shift);
-			ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
-			break;
-		case 3:
-			//ADD_VAL(" a:%4.2f", amp);
-			//ADD_VAL(" a:%5d", (int)(amp*100.0f));
-			ADD_VAL(" A:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I)- (int)A_mean);
-			ADD_VAL(" B:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I)- (int)B_mean);
-			ADD_VAL(" C:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I)- (int)C_mean);
-			break;
-		case 4:
-			//ADD_VAL(" v:%6.2f", omega);
-			ADD_VAL(" o:%5d", (int)(omega*100.0f));
-			ADD_VAL(" oE:%5d", (int)(omegaEnc*100.0f));
-			ADD_VAL(" od:%5d", (int)(omegaEncDot*1.0f));
+	case 0:
+		sprintf(buf, "tx: %c %4d %4d %4d %4d ", ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3]);//70000ns
+		break;
+	case 1:
+		ADD_VAL(" a:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_U));
+		ADD_VAL(" b:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_U));
+		ADD_VAL(" c:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_U));
+		//ADD_VAL(" p0:%4.2f", phase0);
+		break;
+	case 2:
+		//ADD_VAL(" ps:%4.2f", phase_shift);
+		ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
+		break;
+	case 3:
+		//ADD_VAL(" a:%4.2f", amp);
+		//ADD_VAL(" a:%5d", (int)(amp*100.0f));
+		ADD_VAL(" A:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I)- (int)A_mean);
+		ADD_VAL(" B:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I)- (int)B_mean);
+		ADD_VAL(" C:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I)- (int)C_mean);
+		break;
+	case 4:
+		//ADD_VAL(" v:%6.2f", omega);
+		ADD_VAL(" oE:%5d", (int)(omegaEnc*100.0f));
+		ADD_VAL(" od:%5d", (int)(omegaEncDot*1.0f));
 
-			//sprintf(buf_add, " E:%5d", (int)TIM8->CNT); strcat(buf, buf_add);
-			break;
-		case 5:
-			//ADD_VAL(" c:%5d", (int)rotation_counter);
-			ADD_VAL(" s:%5d", (int)(stiffness*10000.0f));
-			break;
-		case 6:
-			break;
-		case 7:
-			//ADD_VAL(" ADC:%5d", HAL_ADC_GetValue(&hadc1));
-			ADD_VAL(" T_MCU:%5d", adc1_buf[RANK_CONT_TMCU-1]);
-			//ADD_VAL(" Vref:%5d", adc1_buf[RANK_CONT_Vref-1]);
-			//ADD_VAL(" Vbat:%5d", adc1_buf[RANK_CONT_Vbat-1]);
-			ADD_VAL(" Vbus:%5d", adc1_buf[RANK_CONT_Vbus-1]);
-			ADD_VAL(" fVbus:%5d", fast_Vbus);
+		//sprintf(buf_add, " E:%5d", (int)TIM8->CNT); strcat(buf, buf_add);
+		break;
+	case 5:
+		//ADD_VAL(" c:%5d", (int)rotation_counter);
+		ADD_VAL(" s:%5d", (int)(stiffness*10000.0f));
+		break;
+	case 6:
+		break;
+	case 7:
+		//ADD_VAL(" ADC:%5d", HAL_ADC_GetValue(&hadc1));
+		ADD_VAL(" T_MCU:%5d", adc1_buf[RANK_CONT_TMCU-1]);
+		//ADD_VAL(" Vref:%5d", adc1_buf[RANK_CONT_Vref-1]);
+		//ADD_VAL(" Vbat:%5d", adc1_buf[RANK_CONT_Vbat-1]);
+		ADD_VAL(" Vbus:%5d", adc1_buf[RANK_CONT_Vbus-1]);
+		ADD_VAL(" fVbus:%5d", fast_Vbus);
 
 
-			//ADD_VAL(" pi:%4d", field_phase_int);
-			break;
-		case 8:
-			ADD_VAL(" dc:%4d", (int)(direct_component*100.0f));
-			ADD_VAL(" qc:%4d", (int)(quadrature_component*100.0f));
-			ADD_VAL(" FOC:%4d", (int)(FOC_phase_shift*100.0f));
-			break;
-		case 9:
-			ADD_VAL(" gf:%4d", (int)(generic_fac*100.0f));
-			break;
-		case 10:
-			ADD_VAL(" ga:%4d", (int) generic_add);
-			break;
-		case 11:
-			ADD_VAL(" P:%5d", (int) (fast_P_consumed*100.0f));
+		//ADD_VAL(" pi:%4d", field_phase_int);
+		break;
+	case 8:
+		//ADD_VAL(" dc:%4d", (int)(direct_component*100.0f));
+		//ADD_VAL(" qc:%4d", (int)(quadrature_component*100.0f));
+		ADD_VAL(" FOC:%4d", (int)(FOC_phase_shift*100.0f));
+		break;
+	case 9:
+		ADD_VAL(" gf:%4d", (int)(generic_fac*100.0f));
+		break;
+	case 10:
+		ADD_VAL(" ga:%4d", (int) generic_add);
+		break;
+	case 11:
+		ADD_VAL(" P:%5d", (int) (fast_P_consumed*100.0f));
 
-			if (convert2SI){
-				//float SO0 = ((float)val_I - 2040.0f) * 0.134f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
-				//float SO1 = ((float)val_SO1 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
-				//float SO2 = ((float)val_SO2 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
-				//sprintf(buf_add, " I:%5.2fA SO1:%5.2fA SO2:%5.2fA", SO0, SO1, SO2); strcat(buf, buf_add);
+		if (convert2SI){
+			//float SO0 = ((float)val_I - 2040.0f) * 0.134f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+			//float SO1 = ((float)val_SO1 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134 //TODO verify SPI setting in DRV8301 the factor sqrt(2) comes out of thin air
+			//float SO2 = ((float)val_SO2 - 2002.0f) * 0.189f; // 3.3[V]/4095[ticks] /20[gain]/0.0003[ohm] = 0.134
+			//sprintf(buf_add, " I:%5.2fA SO1:%5.2fA SO2:%5.2fA", SO0, SO1, SO2); strcat(buf, buf_add);
 
-				//float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5f); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
-				//sprintf(buf_add, " It:%5.2fA", I_tot); strcat(buf, buf_add);
-			}
-			else{
-				//sprintf(buf_add, " I:%4d SO1:%4d SO2:%4d", val_I, val_SO1, val_SO2); strcat(buf, buf_add);
-			}
-			break;
-		case 12:
-			ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
-			break;
-		case 13:
-			ADD_VAL(" TE:%4d", (int) av_ESC_TEMP);
-			break;
-		case 14:
-			ADD_VAL(" It:%4.2f", fast_I_tot);
-			break;
-		case 15:
-			ADD_VAL(" F0:%4d", (int) fast_STRAIN0);
-			break;
-		case 16:
-			ADD_VAL(" ps:%4.2f", phase_shift);
-			break;
-
+			//float I_tot = sqrt((SO0*SO0 + SO1*SO1 + SO2*SO2)/1.5f); //see colab - the factor 1.5 allows to extract the distance from center of triangle to tip
+			//sprintf(buf_add, " It:%5.2fA", I_tot); strcat(buf, buf_add);
+		}
+		else{
+			//sprintf(buf_add, " I:%4d SO1:%4d SO2:%4d", val_I, val_SO1, val_SO2); strcat(buf, buf_add);
+		}
+		break;
+	case 12:
+		ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
+		break;
+	case 13:
+		ADD_VAL(" TE:%4d", (int) av_ESC_TEMP);
+		break;
+	case 14:
+		ADD_VAL(" It:%4.2f", fast_I_tot);
+		break;
+	case 15:
+		ADD_VAL(" F0:%4d", (int) fast_STRAIN0);
+		break;
+	case 16:
+		ADD_VAL(" ps:%4.2f", phase_shift);
+		break;
 
 
 
-		case 19:
-			if (av_ESC_TEMP > 1900){
-				sprintf(buf_add, "* >50C on ESC"); strcat(buf, buf_add);
-			}
 
-			if (av_MOT_TEMP > 1900){
-				sprintf(buf_add, "* >50C on MOTOR"); strcat(buf, buf_add);
-			}
+	case 19:
+		if (av_ESC_TEMP > 1900){
+			sprintf(buf_add, "* >50C on ESC"); strcat(buf, buf_add);
+		}
 
-			if (fast_STRAIN0 < 2170){
-				sprintf(buf_add, "* -100N force"); strcat(buf, buf_add);
-			}
-			break;
+		if (av_MOT_TEMP > 1900){
+			sprintf(buf_add, "* >50C on MOTOR"); strcat(buf, buf_add);
+		}
 
-		case 20:
-			sprintf(buf_add, " \r\n"); strcat(buf, buf_add);
-			break;
+		if (fast_STRAIN0 < 2170){
+			sprintf(buf_add, "* -100N force"); strcat(buf, buf_add);
+		}
+		break;
+
+	case 20:
+		sprintf(buf_add, " \r\n"); strcat(buf, buf_add);
+		break;
 	}
 
 #if 0
@@ -3411,7 +3404,7 @@ void print_task(void){
 		buf_msgs[0] = '\0';
 	}
 
-		//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
+	//                   0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5---------6---------7---------8---------9---------0---------1---------2---------3---------4---------5
 
 
 
@@ -3713,321 +3706,6 @@ void timing_party(){
 
 
 }
-
-// -----------------------------------------------------------
-// --- USEFUL LINES
-// -----------------------------------------------------------
-
-// --- read analog
-//		uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
-//					uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
-//					uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3); //last number refers to rank
-//					uint32_t val_M0_TEMP = HAL_ADCEx_InjectedGetValue (&hadc1, 4);
-//
-//					uint32_t val_SO1 = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
-//					uint32_t val_BSENSE = HAL_ADCEx_InjectedGetValue (&hadc2, 2);
-//					uint32_t val_STRAIN1 = HAL_ADCEx_InjectedGetValue (&hadc2, 3);
-//					uint32_t val_TEMP = HAL_ADCEx_InjectedGetValue (&hadc2, 4);
-//					uint32_t val_VBUS = HAL_ADCEx_InjectedGetValue (&hadc2, 5); //TODO this value is not read out correctly - always comes as 0
-//
-//					uint32_t val_SO2 = HAL_ADCEx_InjectedGetValue (&hadc3, 1);
-//					uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
-
-
-
-// -- read angle
-		//		if (0){
-		//			//			// --- read angle
-		//			//uint8_t spi_address_8[2];
-		//			//uint8_t angle8[2];
-		//			spi_address_8[1]= 0x7F;
-		//			spi_address_8[0]= 0xFE;
-		//			//address8 = {0xFE, 0x7F};
-		//			//address = 0x3FFE | AS_READ ;
-		//			delay_SPI();
-		//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-		//			HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
-		//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-		//			delay_SPI();
-		//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
-		//			HAL_SPI_Receive(&hspi2, (uint8_t *)&angle8, 1, 1);
-		//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
-		//			angle = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
-		//			angle &= AS_DATA_MASK;
-		//		}
-
-
-
-// -----------------------------------------------------------
-// --- possible enhancements
-// -----------------------------------------------------------
-//phase_int1000 = EncVal * N_POLES * 1000 /
-
-//uint16_t convertVal2Temp(uint16_t val_T){
-//	if (T < 584){
-//		return 0 + 10*
-//	}
-//}
-
-// -----------------------------------------------------------
-//--- SERIOUS OUTTAKES
-// -----------------------------------------------------------
-
-#if 0
-
-
-
-// --- HEARTBEAT (1ms)  of the microcontroller - was used for position control
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
-}
-
-void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
-	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin;
-}
-
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
-	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
-}
-
-void myDelay(void){
-	HAL_Delay(1);
-}
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
-	if(htim->Instance == TIM3){
-		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-	}
-}
-
-
-#endif
-
-
-// -----------------------------------------------------------
-//--- OUTTAKES
-// -----------------------------------------------------------
-
-
-
-//#define USE_HAL_TIM_REGISTER_CALLBACKS 1    // TODO work out other callback for encoder
-
-//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
-//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
-//void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
-
-// --- INTERRUPT  ----------------------------------------------------
-// --- this was used to try interrupt - now the ROT0_A_U_Pin is configured for rot sensor
-//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-//	if (GPIO_Pin == ROT0_A_U_Pin){
-//		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-//	}
-//	else{
-//		__NOP();
-//	}
-//}
-
-//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
-
-	//	adcChannel.Channel = ADC_CHANNEL_8;
-	//	adcChannel.Rank = 1;
-	//	adcChannel.SamplingTime = ADC_SAMPLETIME_15CYCLES;//5mus //ADC_SAMPLETIME_480CYCLES;// 20mus
-	//	adcChannel.Offset = 0;
-	//	HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
-
-	//	uint32_t g_ADCValue8;
-	//	uint32_t g_ADCValue14;
-	//	uint32_t g_ADCValue15;
-	//	int g_MeasurementNumber;
-
-	//	see https://visualgdb.com/tutorials/arm/stm32/adc/
-	//	uint32_t a_val;
-	//	a_val = HAL_ADC_GetValue(&hadc2)
-	//	HAL_ADC_Start(&hadc2);
-
-		//HAL_CAN_AddTxMessage(&hcan1, &pHeader, &a, &TxMailbox);
-
-		// --- GPIO ----------------------------------------------------
-		//HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-
-
-//--mybest but still super slow FOC alg
-//else if (FOC_ALG == 2){ // this method needs to have trigger when we get to next cycle and needs averaging over a few cycles
-//			static float current_phase;
-//			static float last_phase;
-//			last_phase = current_phase;
-//			current_phase = (float) EncVal * 0.0031415f * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
-//			current_phase -= phase0;
-//			current_phase += 6.28f;
-//			current_phase = fmod(current_phase, 6.28f);
-//
-//			int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
-//
-//
-//			if (last_phase - current_phase > 1 || last_phase - current_phase < -1){
-//				direct_component = direct_component_sum/component_counter;
-//				quadrature_component = quadrature_component_sum/component_counter;
-//
-//
-//				float lp = 0.05f;
-//				direct_component_lp = (1-lp) * direct_component_lp + lp * direct_component;
-//				quadrature_component_lp = (1-lp) * quadrature_component_lp + lp * quadrature_component;
-//
-//				static float direct_component_lp_integral = 0.0f;
-//				direct_component_lp_integral += direct_component_lp;
-//
-//				FOC_phase_shift = 0.01f* generic_gain * direct_component_lp + 0.00001f  * direct_component_lp_integral; //starts oscillating at I = 0.00008f and alternatively at P = 0.03f
-//
-//				if (FOC_phase_shift > 0.3f){
-//					FOC_phase_shift = 0.3f;
-//				}
-//				else if (FOC_phase_shift < -0.3f){
-//					FOC_phase_shift = -0.3f;
-//				}
-//
-//				if (abs(lp_omega) < 1){
-//					FOC_phase_shift = 0.0f;
-//					//direct_component_integral = 0.0f;
-//				}
-//
-//				direct_component_sum = 0.0f;
-//				quadrature_component_sum = 0.0f;
-//				component_counter = 0;
-//			}
-//
-//			if (current_phase < 1.571){
-//				direct_component_sum += val_I;
-//				quadrature_component_sum += val_I;
-//			}
-//			else if (current_phase < 3.142){
-//				direct_component_sum -= val_I;
-//				quadrature_component_sum += val_I;
-//			}
-//			else if (current_phase < 4.712){
-//				direct_component_sum -= val_I;
-//				quadrature_component_sum -= val_I;
-//			}
-//			else {
-//				direct_component_sum += val_I;
-//				quadrature_component_sum -= val_I;
-//			}
-//			component_counter++;
-//
-//		}
-
-// --- wrong way of doing FOC
-//if (0){ //it is nonsense to have a exp decay window for an oscillatory motion --- this is why this only worked for super slow lp
-//	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
-//			phase -= phase0;
-//			phase += 6.28;
-//			phase = fmod(phase, 6.28);
-//	int8_t cos_contribution = 0;
-//	int8_t sin_contribution = 0;
-//
-//	if (phase < 1.571){
-//		cos_contribution = +1;
-//		sin_contribution = +1;
-//	}
-//	else if (phase < 3.142){
-//		cos_contribution = -1;
-//		sin_contribution = +1;
-//	}
-//	else if (phase < 4.712){
-//		cos_contribution = -1;
-//		sin_contribution = -1;
-//	}
-//	else {
-//		cos_contribution = +1;
-//		sin_contribution = -1;
-//	}
-//
-//	int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
-//
-//	//float lp =  1.0f / 40000.0f / 10.0f * lp_omega * (float)N_POLES; //making the 1/e time 10 times the pass of a pole
-//	//float lp =  0.00003f; // for 2Hz
-//	float lp =  0.0003f; // for 2Hz
-//	direct_component = (1-lp) * direct_component + lp * (cos_contribution * val_I);
-//	quadrature_component = (1-lp) * quadrature_component + lp * (sin_contribution * val_I);
-//
-//	static float direct_component_integral = 0.0f;
-//	direct_component_integral += direct_component;
-//
-//	FOC_phase_shift = 0.01f* generic_gain * direct_component + 0.00001f  * direct_component_integral; //starts oscillating at I = 0.00008f and alternatively at P = 0.03f
-//
-//	if (FOC_phase_shift > 0.3f){
-//		FOC_phase_shift = 0.3f;
-//	}
-//	else if (FOC_phase_shift < -0.3f){
-//		FOC_phase_shift = -0.3f;
-//	}
-//
-//	if (lp_omega < 6 && lp_omega > -6){
-//		FOC_phase_shift = 0.0f;
-//		direct_component_integral = 0.0f;
-//	}
-//}
-
-// --- another wrong way of doing FOC
-// --- phase calc
-//		if (val_SO1_buf_index < 72){
-//			val_SO1_buf[val_SO1_buf_index] = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
-//			val_SO1_buf_index++;
-//		}
-//		if (val_SO1_buf_index == 72){  // some hints that this takes 10mus
-//
-//			int32_t cos_part = 0;
-//			int32_t sin_part = 0;
-//
-//			for (int i=0; i< 72; i++){
-//					if (i<18){
-//						cos_part += val_SO1_buf[i];
-//						sin_part += val_SO1_buf[i];}
-//					else if (i<36){
-//						cos_part -= val_SO1_buf[i];
-//						sin_part += val_SO1_buf[i];}
-//					else if (i<54){
-//						cos_part -= val_SO1_buf[i];
-//						sin_part -= val_SO1_buf[i];}
-//					else{
-//						cos_part += val_SO1_buf[i];
-//						sin_part -= val_SO1_buf[i];}
-//			}
-//			field_amplitude = cos_part*cos_part + sin_part*sin_part;
-//			field_phase_shift = (float) cos_part / (float) sin_part;
-//			field_phase_shift_pihalf = (float) sin_part / (float) cos_part;
-//
-//			val_SO1_buf_index++;
-//		}
-
-//void append_msg((char*)msg, uint8_t n){
-//	if (strlen(buf_msg) + strlen(buf_msgs) < 100){
-//		strncat(buf_msgs, buf_msg, n);
-//	}
-//	else {
-//		buf_msgs[0] = '#';
-//	}
-//}
-
-
-//void EncoderStepCallback(TIM_HandleTypeDef *htim){
-//	if(htim->Instance == TIM8){
-//	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
-//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-//				debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
-//				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-//							debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
-//							debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-//										debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
-//
-//}}
-
-
-//void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
-//
-//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
-//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
-//}
-
-
 
 
 /* USER CODE END 4 */

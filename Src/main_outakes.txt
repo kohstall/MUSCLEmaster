@@ -1,0 +1,373 @@
+
+
+// -----------------------------------------------------------
+// --- USEFUL LINES
+// -----------------------------------------------------------
+
+// --- read analog
+//		uint32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//					uint32_t val_ASENSE = HAL_ADCEx_InjectedGetValue (&hadc1, 2);
+//					uint32_t val_STRAIN0 = HAL_ADCEx_InjectedGetValue (&hadc1, 3); //last number refers to rank
+//					uint32_t val_M0_TEMP = HAL_ADCEx_InjectedGetValue (&hadc1, 4);
+//
+//					uint32_t val_SO1 = HAL_ADCEx_InjectedGetValue (&hadc2, 1);
+//					uint32_t val_BSENSE = HAL_ADCEx_InjectedGetValue (&hadc2, 2);
+//					uint32_t val_STRAIN1 = HAL_ADCEx_InjectedGetValue (&hadc2, 3);
+//					uint32_t val_TEMP = HAL_ADCEx_InjectedGetValue (&hadc2, 4);
+//					uint32_t val_VBUS = HAL_ADCEx_InjectedGetValue (&hadc2, 5); //TODO this value is not read out correctly - always comes as 0
+//
+//					uint32_t val_SO2 = HAL_ADCEx_InjectedGetValue (&hadc3, 1);
+//					uint32_t val_CSENSE = HAL_ADCEx_InjectedGetValue (&hadc3, 2);
+
+
+
+// -- read angle
+//		if (0){
+//			//			// --- read angle
+//			//uint8_t spi_address_8[2];
+//			//uint8_t angle8[2];
+//			spi_address_8[1]= 0x7F;
+//			spi_address_8[0]= 0xFE;
+//			//address8 = {0xFE, 0x7F};
+//			//address = 0x3FFE | AS_READ ;
+//			delay_SPI();
+//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+//			HAL_SPI_Transmit(&hspi2, (uint8_t *)spi_address_8, 1, 1);// The HAL function here takes only 8bit only - still the "Size amount of data" is 1 because we set spi to 16 bit in Config
+//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+//			delay_SPI();
+//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_RESET);
+//			HAL_SPI_Receive(&hspi2, (uint8_t *)&angle8, 1, 1);
+//			HAL_GPIO_WritePin(ROT0_nCS_GPIO_Port, ROT0_nCS_Pin, GPIO_PIN_SET);
+//			angle = (uint16_t) angle8[0] | (uint16_t) angle8[1] << 8U;
+//			angle &= AS_DATA_MASK;
+//		}
+
+
+
+// -----------------------------------------------------------
+// --- possible enhancements
+// -----------------------------------------------------------
+//phase_int1000 = EncVal * N_POLES * 1000 /
+
+//uint16_t convertVal2Temp(uint16_t val_T){
+//	if (T < 584){
+//		return 0 + 10*
+//	}
+//}
+
+// -----------------------------------------------------------
+//--- SERIOUS OUTTAKES
+// -----------------------------------------------------------
+
+#if 0
+
+
+
+// --- HEARTBEAT (1ms)  of the microcontroller - was used for position control
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim3){
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin;
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	debug2_out_GPIO_Port->BSRR = (uint32_t)debug2_out_Pin << 16U;
+}
+
+void myDelay(void){
+	HAL_Delay(1);
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if(htim->Instance == TIM3){
+		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+	}
+}
+
+
+#endif
+
+
+
+// -----------------------------------------------------------
+//--- OUTTAKES
+// -----------------------------------------------------------
+
+
+
+/*
+ * calculates the angular velocity omega from diff in EncVal devided by time passed measured with Timer 2
+ */
+// ------- legacy routine for omega
+//void calc_omega(void){
+//	// TODO check KV; I find 80Hz at 25V this would be 192kV arrg
+//	static uint32_t last_t = 0;
+//	register uint32_t t_now = TIM2->CNT;
+//	register int32_t delta_t;
+//	if (t_now > last_t){
+//		delta_t = t_now - last_t;
+//	}
+//	else {
+//		delta_t = t_now - last_t; //todo correct statement
+//	}
+//	last_t = t_now;
+//
+//	// --- get change of EncVal since last pass
+//	register int32_t EncVal = TIM8->CNT;
+//	register int32_t delta_EncVal = (int32_t)EncVal - (int32_t)last_EncVal_omega;
+//	last_EncVal_omega = EncVal;
+//
+//	delta_EncVal = encoder_jump_comp(delta_EncVal);
+//
+//	omega =  omega_division(delta_EncVal, delta_t);//[steps/counts] // /ENC_STEPS steps/round * 21000000 counts/sec --> [round/sec]  //TODO omega seems too high by factor of 2 or 3 maybe same clock frequency issue that we actually run at 42 MHz. !!! TODO check clock frequency  // TODO divided by 10 as well
+//	lp_omega = (1.0f - LP_OMEGA_CONST) * lp_omega + LP_OMEGA_CONST * omega;
+//
+//}
+
+
+//HAL_TIM_RegisterCallback(&htim8, HAL_TIM_IC_CAPTURE_CB_ID, &EncoderStepCallback );
+
+	//HAL_ADC_Start(&hadc1);
+	//HAL_ADC_Start(&hadc2);
+	//HAL_ADC_Start(&hadc3);
+
+
+//HAL_TIM_Base_Start(&htim6);
+//HAL_TIM_Base_Start(&htim3);
+//HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_1);
+//int i=0;
+//uint32_t i_fast = 0;
+//uint32_t i_slow = 0;
+//uint32_t fast2slow = 100;
+//float p = 0.0f;
+//int32_t direct_component_sum = 0;
+//int32_t quadrature_component_sum = 0;
+//int32_t component_counter = 0;
+//uint8_t wave_mode = 0;
+//uint32_t tim12_counter = 4000000000;
+//uint16_t tim12_counter = 5;
+
+//uint32_t field_amplitude = 0;
+//float field_phase_shift = 0;
+//float field_phase_shift_pihalf = 0;
+
+//#define USE_HAL_TIM_REGISTER_CALLBACKS 1    // TODO work out other callback for encoder
+
+//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
+//void HAL_TIM_IRQHandler(TIM_HandleTypeDef *htim);
+//void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim);
+
+// --- INTERRUPT  ----------------------------------------------------
+// --- this was used to try interrupt - now the ROT0_A_U_Pin is configured for rot sensor
+//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+//	if (GPIO_Pin == ROT0_A_U_Pin){
+//		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+//	}
+//	else{
+//		__NOP();
+//	}
+//}
+
+//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
+
+//	adcChannel.Channel = ADC_CHANNEL_8;
+//	adcChannel.Rank = 1;
+//	adcChannel.SamplingTime = ADC_SAMPLETIME_15CYCLES;//5mus //ADC_SAMPLETIME_480CYCLES;// 20mus
+//	adcChannel.Offset = 0;
+//	HAL_ADC_ConfigChannel(&hadc2, &adcChannel);
+
+//	uint32_t g_ADCValue8;
+//	uint32_t g_ADCValue14;
+//	uint32_t g_ADCValue15;
+//	int g_MeasurementNumber;
+
+//	see https://visualgdb.com/tutorials/arm/stm32/adc/
+//	uint32_t a_val;
+//	a_val = HAL_ADC_GetValue(&hadc2)
+//	HAL_ADC_Start(&hadc2);
+
+//HAL_CAN_AddTxMessage(&hcan1, &pHeader, &a, &TxMailbox);
+
+// --- GPIO ----------------------------------------------------
+//HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+
+
+//--mybest but still super slow FOC alg
+//else if (FOC_ALG == 2){ // this method needs to have trigger when we get to next cycle and needs averaging over a few cycles
+//			static float current_phase;
+//			static float last_phase;
+//			last_phase = current_phase;
+//			current_phase = (float) EncVal * 0.0031415f * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
+//			current_phase -= phase0;
+//			current_phase += 6.28f;
+//			current_phase = fmod(current_phase, 6.28f);
+//
+//			int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//
+//
+//			if (last_phase - current_phase > 1 || last_phase - current_phase < -1){
+//				direct_component = direct_component_sum/component_counter;
+//				quadrature_component = quadrature_component_sum/component_counter;
+//
+//
+//				float lp = 0.05f;
+//				direct_component_lp = (1-lp) * direct_component_lp + lp * direct_component;
+//				quadrature_component_lp = (1-lp) * quadrature_component_lp + lp * quadrature_component;
+//
+//				static float direct_component_lp_integral = 0.0f;
+//				direct_component_lp_integral += direct_component_lp;
+//
+//				FOC_phase_shift = 0.01f* generic_gain * direct_component_lp + 0.00001f  * direct_component_lp_integral; //starts oscillating at I = 0.00008f and alternatively at P = 0.03f
+//
+//				if (FOC_phase_shift > 0.3f){
+//					FOC_phase_shift = 0.3f;
+//				}
+//				else if (FOC_phase_shift < -0.3f){
+//					FOC_phase_shift = -0.3f;
+//				}
+//
+//				if (abs(lp_omega) < 1){
+//					FOC_phase_shift = 0.0f;
+//					//direct_component_integral = 0.0f;
+//				}
+//
+//				direct_component_sum = 0.0f;
+//				quadrature_component_sum = 0.0f;
+//				component_counter = 0;
+//			}
+//
+//			if (current_phase < 1.571){
+//				direct_component_sum += val_I;
+//				quadrature_component_sum += val_I;
+//			}
+//			else if (current_phase < 3.142){
+//				direct_component_sum -= val_I;
+//				quadrature_component_sum += val_I;
+//			}
+//			else if (current_phase < 4.712){
+//				direct_component_sum -= val_I;
+//				quadrature_component_sum -= val_I;
+//			}
+//			else {
+//				direct_component_sum += val_I;
+//				quadrature_component_sum -= val_I;
+//			}
+//			component_counter++;
+//
+//		}
+
+// --- wrong way of doing FOC
+//if (0){ //it is nonsense to have a exp decay window for an oscillatory motion --- this is why this only worked for super slow lp
+//	phase = (float) EncVal * 0.0031415 * N_POLES ; //(float) EncVal / ENC_STEPS * 2*PI * N_POLES ; //takes 1500ns
+//			phase -= phase0;
+//			phase += 6.28;
+//			phase = fmod(phase, 6.28);
+//	int8_t cos_contribution = 0;
+//	int8_t sin_contribution = 0;
+//
+//	if (phase < 1.571){
+//		cos_contribution = +1;
+//		sin_contribution = +1;
+//	}
+//	else if (phase < 3.142){
+//		cos_contribution = -1;
+//		sin_contribution = +1;
+//	}
+//	else if (phase < 4.712){
+//		cos_contribution = -1;
+//		sin_contribution = -1;
+//	}
+//	else {
+//		cos_contribution = +1;
+//		sin_contribution = -1;
+//	}
+//
+//	int32_t val_I = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//
+//	//float lp =  1.0f / 40000.0f / 10.0f * lp_omega * (float)N_POLES; //making the 1/e time 10 times the pass of a pole
+//	//float lp =  0.00003f; // for 2Hz
+//	float lp =  0.0003f; // for 2Hz
+//	direct_component = (1-lp) * direct_component + lp * (cos_contribution * val_I);
+//	quadrature_component = (1-lp) * quadrature_component + lp * (sin_contribution * val_I);
+//
+//	static float direct_component_integral = 0.0f;
+//	direct_component_integral += direct_component;
+//
+//	FOC_phase_shift = 0.01f* generic_gain * direct_component + 0.00001f  * direct_component_integral; //starts oscillating at I = 0.00008f and alternatively at P = 0.03f
+//
+//	if (FOC_phase_shift > 0.3f){
+//		FOC_phase_shift = 0.3f;
+//	}
+//	else if (FOC_phase_shift < -0.3f){
+//		FOC_phase_shift = -0.3f;
+//	}
+//
+//	if (lp_omega < 6 && lp_omega > -6){
+//		FOC_phase_shift = 0.0f;
+//		direct_component_integral = 0.0f;
+//	}
+//}
+
+// --- another wrong way of doing FOC
+// --- phase calc
+//		if (val_SO1_buf_index < 72){
+//			val_SO1_buf[val_SO1_buf_index] = HAL_ADCEx_InjectedGetValue (&hadc1, 1);
+//			val_SO1_buf_index++;
+//		}
+//		if (val_SO1_buf_index == 72){  // some hints that this takes 10mus
+//
+//			int32_t cos_part = 0;
+//			int32_t sin_part = 0;
+//
+//			for (int i=0; i< 72; i++){
+//					if (i<18){
+//						cos_part += val_SO1_buf[i];
+//						sin_part += val_SO1_buf[i];}
+//					else if (i<36){
+//						cos_part -= val_SO1_buf[i];
+//						sin_part += val_SO1_buf[i];}
+//					else if (i<54){
+//						cos_part -= val_SO1_buf[i];
+//						sin_part -= val_SO1_buf[i];}
+//					else{
+//						cos_part += val_SO1_buf[i];
+//						sin_part -= val_SO1_buf[i];}
+//			}
+//			field_amplitude = cos_part*cos_part + sin_part*sin_part;
+//			field_phase_shift = (float) cos_part / (float) sin_part;
+//			field_phase_shift_pihalf = (float) sin_part / (float) cos_part;
+//
+//			val_SO1_buf_index++;
+//		}
+
+//void append_msg((char*)msg, uint8_t n){
+//	if (strlen(buf_msg) + strlen(buf_msgs) < 100){
+//		strncat(buf_msgs, buf_msg, n);
+//	}
+//	else {
+//		buf_msgs[0] = '#';
+//	}
+//}
+
+
+//void EncoderStepCallback(TIM_HandleTypeDef *htim){
+//	if(htim->Instance == TIM8){
+//	HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_3);
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//				debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//				debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//							debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//							debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//										debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//
+//}}
+
+
+//void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
+//
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin; //takes 60ns == 5 clock cycles
+//	debug1_out_GPIO_Port->BSRR = debug1_out_Pin << 16U; //takes 60ns == 5 clock cycles
+//}
+
+
