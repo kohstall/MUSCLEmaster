@@ -1,0 +1,261 @@
+	if (0){
+
+		DB1L;//40ns
+		int t11 = 2345;//10 (subtract 40 from the 60 below and devide by 2 because we do 2 operations)
+		int t12 = 1234;//10
+		DB1H;//60ns
+		int t13 = t11+t12;//40
+
+		DB1L;//80ns
+		int t21 = 2345;//0
+		int t22 = 1234;//0
+		DB1H;//40ns
+		int t23 = t21/t22;//60
+
+		DB1L;//100
+		float t31 = 2345;//20
+		float t32 = 1234;//20
+		DB1H;//80
+		float t33 = t31+t32;//160
+
+		DB1L;//200
+		float t41 = 2345;//20
+		float t42 = 1234;//20
+		DB1H;//80
+		float t43 = t41/t42;//110
+
+		DB1L;//150
+		float t51 = 2345;//20
+		int t52 = 1234;//10
+		DB1H;//70
+		float t53 = t51/(float)t52;//140
+
+		DB1L;//180
+		DB1H;
+		DB1L;
+		DB1H;
+
+
+
+		DB1L;
+		int8_t t71 = 2345;//10
+		int8_t t72 = 1234;//10
+		DB1H;//50
+		int8_t t73 = t71+t72;//40
+
+		DB1L;//80
+		int16_t t61 = 2345;//10
+		int16_t t62 = 1234;//
+		DB1H;//
+		int16_t t63 = t61+t62;//40
+
+
+		DB1L;
+		int32_t t81 = 2345;//10
+		int32_t t82 = 1234;//
+		DB1H;//
+		int32_t t83 = t81+t82;//40
+
+
+		DB1L;
+		int64_t t91 = 2345;//30
+		int64_t t92 = 1234;//
+		DB1H;//100
+		int64_t t93 = t91+t92;//60 <<<<<<<<<<<< all int have same speed but 64 is much slower
+
+
+		DB1L;//100
+		DB1H;
+		DB1L;
+		DB1H;
+
+		DB1L;
+		double r91 = 2345;//70
+		double r92 = 1234;//70
+		DB1H;//180
+		double r93 = r91+r92;//860
+
+		DB1L;//900
+		float r81 = 2345;//20
+		//int t52 = 1234;//
+		DB1H;//60
+		float r83 = 3.1234 * r81;//950 <<<<<<<<<<<<<<< super slow
+
+		DB1L;//1000
+		float r71 = 2345;//
+		//int t52 = 1234;//
+		DB1H;//60
+		float r73 = 3.1234f * r71; // 80 <<<<<<<<<<<< super important to put f behind floating point number
+
+		DB1L;//120
+		DB1H;
+		DB1L;
+		DB1H;
+
+		DB1L;
+		int e11 = 123;
+		int e12 = 234;
+		int e13 =0;
+		DB1H;//140
+		e13 = e11 + e12;
+		e13 = e13 + 345;
+		DB1L;//100
+		e13 = e11 + e12 + 345;// <<<<<<one line is faster than 2 lines as above !!!
+		DB1H;//80
+		e13 = e11 + e12 + 345 + 456 + 567; //  <<<<<NO additional time for writing out all the numbers !!!!!
+		DB1L;//80
+		e13 = e11 + e12;
+		e13 += 345; //+= just as = _+
+		DB1H;//110
+		e13 = e11 + e12;//40
+		e13 = e13 + PWM_1PERCENT;//30
+		DB1L;//110
+		e13 = e11 + e12; //40
+		e13 = e13 + rotation_counter; //100 <<<<<<<<getting a variable takes much longer than having define !!!!
+
+		DB1L;//180
+		DB1H;
+		DB1L;
+		DB1H;
+	}
+
+	if (0){
+
+		float c;
+		DB1L;
+		c = cos(0.1f);
+		DB1H;//60
+		c = cos(0.1);
+		DB1L;//60
+		c = sqrt(0.1f);
+		DB1H;//60
+		c = pow(0.1f,0.5f);
+		DB1L;//60
+		c = pow(0.1f,0.5);
+		DB1H;//60
+		c = sin_lookup[4];
+		DB1L;//60
+		//c = cos(c);
+		DB1H;//10000ns >>>>>>>>>>>>>>> Doing calc on variable as opposed to fix takes forever
+		c = sin_lookup[(int)(c*100)];
+		DB1L;//300ns
+		c = sin_lookup[(int)(c*100.0)];
+		DB1H;//1100ns
+		c = sin_lookup[(int)(c*100.0f)];
+		DB1L;//180ns
+
+		DB1H;
+
+		DB1L;//60
+		DB1H;
+		DB1L;
+		DB1H;
+	}
+
+	if (0){
+		int ii;
+		float ff;
+
+		DB1L;
+		ii = 1;
+		ii = 2;
+		ii = 3;//10
+		DB1H;//80
+
+		DB1L;
+		for (int i=0; i<3; i++){
+			ii = i;
+		}
+		DB1H;//450     //<<<<<<<<<<<<<<< What is happening here??? loop takes for ever
+
+		DB1L;
+		for (float i=0.0f; i<1.0f; i+=0.3f){
+			ff = i;
+		}
+		DB1H;//800
+
+		//	DB1L;
+		//	for (float i=0.0f; i<1.0f; i+=0.3f){
+		//		ff = sin(i);
+		//	}
+		//	DB1H;
+
+		DB1L;
+		for (int i=0; i<1; i++){
+			ff = sin(0.1f);
+		}
+		DB1H;//400 in next measurement only 250ns --- how can this be faster than the assignment loop - maybe because we always assign same.
+
+
+
+		DB1L;
+		for (int i=0; i<3; i++){
+			ff = sin_lookup[i];
+		}
+		DB1H;//550  <<<<<<<<<< Lookup is slower than calc --- double check because we do only same calc up there
+
+		DB1L;
+		for (int i=0; i<1; i++){
+			ff = sin(0.1f*(float)i);
+		}
+		DB1H;//2000ns !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! for one calc only
+
+		DB1L;
+		DB1H;
+		DB1L;
+		DB1H;
+	}
+
+
+	if (0) {
+
+		DB1L;
+		float r = 2345;//30
+		float rr = 1234;//30
+		DB1H;//100
+		float rrr = r+rr;//40
+
+		DB1L;//80
+		register float r1 = 2345;//0
+		register float rr1 = 1234;//0
+		DB1H;//40
+		register float rrr1 = r1+rr1;//0 <<<<<<<<<<<<,OK this is not resolvable anymore
+
+		DB1L;//40
+		float r2 = 2345;//20
+		float rr2 = 1234;//20
+		DB1H;//100
+		float rrr2 = r2+rr2;//40
+
+		DB1L;//80
+		DB1H;
+		DB1L;
+		DB1H;
+
+	}
+
+	if (1) {
+
+		DB1L;
+		bool v = true;//
+		int ff = 1;
+		DB1H;//100
+		if (v){
+			int ff = 0;
+		}
+		ff=0;
+
+		DB1L;//80
+		int vv = 1;
+		int fff = 1;
+		DB1H;//40
+		fff *= vv;//0 <<<<<<<<<<<<,OK this is not resolvable anymore
+
+
+
+		DB1L;//80
+		DB1H;
+		DB1L;
+		DB1H;
+
+	}

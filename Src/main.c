@@ -18,33 +18,38 @@
  */
 
 //Big todo
+/*
+ * next steps
+ * close torque loop
+ * perfect stiffness
+ * find limits routine --> set to absolute position and limits
+ * implement software bumpers
+ *
+ */
 //
 // --- code
-// - init routine declutter
-// - variable sorting
 //
 // --- architecture
 // - injection triggers sensing that take way too long (8prescalor*4*(3+5+15)cycles)=8mus
+// - as above may have adverse effect on force reading
 //
 // --- features
 // - force control
-// - self check
+// - more self check
 // - CAN comm
-// - DONE read Vbus
 // - read IMU
 // - program DRV (max current)
 //
 // --- more
-// - V sense
-// - power measurement
+// - (shelved) V sense
 //
 // --- reliability
-// - reliable programming and readout of angle sensor
 // - booting up from switch on without reset
-// - reliable play button when writing code
+// - (good for now) reliable programming and readout of angle sensor
+// - (good for now) reliable play button when writing code
 //
 // --- design
-// - lp of ABCsense with 1mus rise 600kHz may not be ideal
+// - lp of ABCsense with 1mus rise 600kHz may not be ideal - needs to be MUCH slower to average out
 // - lp in current sense is different for A than for B and C !
 //
 // --- further digging
@@ -302,6 +307,7 @@ void print_prep_task(int fast_control_task_counter);
 void timing_party(void);
 float omega_division(int32_t delta_EncVal, int32_t delta_t);
 int32_t encoder_jump_comp(int32_t delta_EncVal);
+float convert2SI_strain(uint32_t strain);
 
 
 
@@ -339,16 +345,32 @@ int32_t encoder_jump_comp(int32_t delta_EncVal);
 //#define CAN_ID 0x13
 //#define INVERT 0
 
-//--ESC_ID = 100; // test rig for muscle mp with 5045
-float phase0 = 1.2f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-#define  N_POLES 7 //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+////--ESC_ID = 100; // test rig for muscle mp with 5045
+//float phase0 = 1.2f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//int32_t  N_POLES = 7; //<<<see calib routine //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+//#define CAN_ID 0x100
+//int32_t INVERT = 0; //<<<see calib routine
+//#define DIFF_FORCE 0
+//#define I_LIM 50.0f //amps
+//#define I_LIM_MAX_COUNT 100 // max number of encounters in fast loop
+//#define VBUS_MAX 30.0f
+//#define VBUS_MIN 8.0f
+
+//--ESC_ID = 100; // right biceps 5045
+float phase0 = 5.84f;  //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+int32_t  N_POLES = 7; //<<<see calib routine //7(14 magnets, 12 coils) //21//(42 magnets, 36 coils) //$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 #define CAN_ID 0x100
-#define INVERT 0
+int32_t INVERT = 0; //<<<see calib routine
 #define DIFF_FORCE 0
-#define I_LIM 50.0f //amps
+#define I_LIM 100.0f //amps
+#define T_ESC_LIM 1500
+#define T_MOTOR_LIM 1500
 #define I_LIM_MAX_COUNT 100 // max number of encounters in fast loop
+#define T_LIM_MAX_COUNT 100 // max number of encounters in fast loop
 #define VBUS_MAX 30.0f
 #define VBUS_MIN 8.0f
+float STRAIN0_NperINT = 2.0f;
+int32_t STRAIN0_OFFSET = 648;
 
 //--ESC_ID = 100; // clavicle yaw
 //float phase0 = -1.232f;  // set to at ABC=0 angle*2*pi/2000*N_poles=angle*0.0220 = (1944-2000)*0.022=-1.232//$$$$$$$$$$$$$ SPECIFIC $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
@@ -379,7 +401,7 @@ current_mode = sinusoidal;
 enum Control_mode {voltage_control = 0, position_control = 1, force_control = 2};
 control_mode = voltage_control;
 
-bool FOC_enabled = true; //<<< choose
+bool FOC_enabled = false; //<<< choose
 
 bool normal_pwm_update = true;
 
@@ -479,6 +501,7 @@ float cos_lookup[628];
 
 char buf_msgs[100];
 char buf_msg[50];
+uint8_t dat_buf[10];
 char buf[BUF_LEN + 1];
 char buf_add[BUF_ADD_LEN + 1];
 //uint8_t plot[300];
@@ -505,8 +528,8 @@ int main(void)
 
 	// --- STARTING SERIAL OUTPUT IN TERMINAL
 	//ls /dev/tty*
-	//screen /dev/tty.usbmodem14203 115200          --- stop: control a \
-	//screen /dev/tty.usbmodem14103 115200          --- stop: control a \
+	//screen /dev/tty.usbmodem14203 115200          --- stop: control a
+	//screen /dev/tty.usbmodem14103 115200          --- stop: control a
 	//Drivers/CMSIS/DSP/Include
 	//ARM_MATH_CM4
 
@@ -566,22 +589,43 @@ int main(void)
 
 	/*****************************************************************************
 	 *                                                                           *
+	 *    TIMERS
+	 *                                                                           *
+	 *****************************************************************************
+	 */
+	HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_Base_Start(&htim5);
+	HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1);
+	HAL_TIM_OC_Start(&htim9, TIM_CHANNEL_2); //seems to work just like pwm above
+
+	/*
+	 * TIM1 mosfet control
+	 * TIM2 0 time measurement for omega calculation
+	 * TIM5 839 => 10mus=100kHz steps position control in fast task
+	 * TIM8 encoder
+	 * TIM9 LEDs
+	 * 1 =  84MHz:   2 3 4 5 6 7           12 13 14
+	 * 2 = 168MHz: 1             8 9 10 11
+	 */
+
+
+	/*****************************************************************************
+	 *                                                                           *
 	 *    LEDS
 	 *                                                                           *
 	 *****************************************************************************
 	 */
-	HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1); //todo clean up timers
-	HAL_TIM_OC_Start(&htim9, TIM_CHANNEL_2); //todo check versus pwm
-	HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1);
 
-	int16_t blink_duration = 100;
-	TIM9->CCR1 = blink_duration;
-	TIM9->CCR2 = blink_duration;
+	GPIOE->BSRR = GPIO_PIN_3; //switches LD1 on
+	GPIOE->BSRR = GPIO_PIN_3 << 16U; //switches LD1 off
 
-	GPIOE->BSRR = GPIO_PIN_4; //switches LD2
+	GPIOE->BSRR = GPIO_PIN_4; //switches LD2 on
+	GPIOE->BSRR = GPIO_PIN_4 << 16U; //switches LD2 off
+
+	TIM9->CCR1 = 300; //switches LD3 to 30%
+	TIM9->CCR2 = 600; //switches LD4 to 60%
 
 	SCB->CPACR |= 0xf00000; //todo understand
-
 
 	/*****************************************************************************
 	 *                                                                           *
@@ -604,15 +648,6 @@ int main(void)
 	HAL_GPIO_WritePin(EN_GATE_GPIO_Port, EN_GATE_Pin, GPIO_PIN_SET);
 
 
-	/*****************************************************************************
-	 *                                                                           *
-	 *    TIMERS
-	 *                                                                           *
-	 *****************************************************************************
-	 */
-	// todo check timers
-	//HAL_TIM_Base_Start_IT(&htim3);
-	HAL_TIM_Base_Start(&htim5);
 
 
 
@@ -624,8 +659,8 @@ int main(void)
 	 */
 	//see: https://www.youtube.com/watch?v=isOekyygpR8
 
-	//  buf[0] = 0x6B;
-	//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+	//  dat_buf[0] = 0x6B;
+	//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 	//  HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, 0x00, 1, HAL_MAX_DELAY);
 	//  HAL_Delay(2);
 
@@ -638,61 +673,61 @@ int main(void)
 
 	char accel_char[20];
 
-	buf[0] = 0x6B; //power register
-	buf[1] = 0x00; //switch on
-	ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 2, HAL_MAX_DELAY);
+	dat_buf[0] = 0x6B; //power register
+	dat_buf[1] = 0x00; //switch on
+	ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, dat_buf, 2, HAL_MAX_DELAY);
 	if (ret != HAL_OK){
-		strcpy((char*)buf, "Error IMU T\r\n");
+		strcpy((char*)dat_buf, "Error IMU T\r\n");
 	} else {
-		buf[0] = 0x00;
+		dat_buf[0] = 0x00;
 	}
 
-	buf[0] = 0x3B;
-	ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+	dat_buf[0] = 0x3B;
+	ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 	if (ret != HAL_OK){
-		strcpy((char*)buf, "Error IMU T\r\n");
+		strcpy((char*)dat_buf, "Error IMU T\r\n");
 	} else {
-		ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+		ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 		if (ret != HAL_OK){
-			strcpy((char*)buf, "Error IMU R\r\n");
+			strcpy((char*)dat_buf, "Error IMU R\r\n");
 		} else {
-			accel8l = (int8_t)buf[0];
+			accel8l = (int8_t)dat_buf[0];
 			sprintf((char*)accel_char, "%u m\r\n", (int)accel8l);
-			//itoa(buf[0], accel_char, 10);
+			//itoa(dat_buf[0], accel_char, 10);
 		}
 
 	}
 
-	//  	buf[0] = 0x42;
-	//		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+	//  	dat_buf[0] = 0x42;
+	//		ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 	//		if (ret != HAL_OK){
-	//			strcpy((char*)buf, "Error IMU T\r\n");
+	//			strcpy((char*)dat_buf, "Error IMU T\r\n");
 	//		} else {
-	//			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+	//			ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 	//			if (ret != HAL_OK){
-	//				strcpy((char*)buf, "Error IMU R\r\n");
+	//				strcpy((char*)dat_buf, "Error IMU R\r\n");
 	//			} else {
-	//				accel8l = (int8_t)buf[0];
-	//				//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
-	//				//itoa(buf[0], accel_char, 10);
+	//				accel8l = (int8_t)dat_buf[0];
+	//				//sprintf((char*)dat_buf, "%u m\r\n", (int)accel8l);
+	//				//itoa(dat_buf[0], accel_char, 10);
 	//			}
 	//
 	//		}
 	//
 	//		//who am i WORKS
 	//
-	//		buf[0] = 0x75;
-	//				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+	//		dat_buf[0] = 0x75;
+	//				ret = HAL_I2C_Master_Transmit(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 	//				if (ret != HAL_OK){
-	//					strcpy((char*)buf, "Error IMU T\r\n");
+	//					strcpy((char*)dat_buf, "Error IMU T\r\n");
 	//				} else {
-	//					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, buf, 1, HAL_MAX_DELAY);
+	//					ret = HAL_I2C_Master_Receive(&hi2c2, IMU_ADDR, dat_buf, 1, HAL_MAX_DELAY);
 	//					if (ret != HAL_OK){
-	//						strcpy((char*)buf, "Error IMU R\r\n");
+	//						strcpy((char*)dat_buf, "Error IMU R\r\n");
 	//					} else {
-	//						accel8l = (int8_t)buf[0];
-	//						//sprintf((char*)buf, "%u m\r\n", (int)accel8l);
-	//						//itoa(buf[0], accel_char, 10);
+	//						accel8l = (int8_t)dat_buf[0];
+	//						//sprintf((char*)dat_buf, "%u m\r\n", (int)accel8l);
+	//						//itoa(dat_buf[0], accel_char, 10);
 	//					}
 	//
 	//				}
@@ -838,8 +873,8 @@ int main(void)
 	 */
 
 	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\nangle: %d init_EncVal %d \r\nangle: %u EncVal %u \r\n\r\n",
-			angle, init_EncVal ,
-			angle, init_EncVal );
+			(int)angle, (int)init_EncVal ,
+			(int)angle, (int)init_EncVal );
 	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
 	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 
@@ -861,7 +896,7 @@ int main(void)
 	B_mean /= I_CALIB_N;
 	C_mean /= I_CALIB_N;
 
-	sprintf(buf, "I_mean: %8.3f %8.3f %8.3f \n", A_mean, B_mean, C_mean );
+	sprintf(buf, "I_mean: %5d %5d %5d \n", (int)A_mean, (int)B_mean, (int)C_mean );
 	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
 	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 	HAL_Delay(10);
@@ -887,6 +922,10 @@ int main(void)
 		sys_err |= 1 << 2U;
 	}
 
+	if (sys_err == 0){
+		GPIOE->BSRR = GPIO_PIN_3; //switches LD1 on
+	}
+
 
 	/*****************************************************************************
 	 *                                                                           *
@@ -895,9 +934,9 @@ int main(void)
 	 *****************************************************************************
 	 */
 
-	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\n angle: %u EncVal %u \r\n error %d \r\n",
-			angle, init_EncVal ,
-			sys_err);
+	sprintf(buf, "\r\n\r\nWELCOME TO MUSCLEmaster \r\n\r\n angle: %d EncVal %d \r\n error %d \r\n",
+			(int)angle, (int)init_EncVal ,
+			(int)sys_err);
 	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
 	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
 
@@ -1705,7 +1744,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 0xFFFFFFFF;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -1762,7 +1801,7 @@ static void MX_TIM5_Init(void)
   htim5.Instance = TIM5;
   htim5.Init.Prescaler = 839;
   htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim5.Init.Period = 4294967295;
+  htim5.Init.Period = 0xFFFFFFFF;
   htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
@@ -1858,7 +1897,7 @@ static void MX_TIM9_Init(void)
 
   /* USER CODE END TIM9_Init 1 */
   htim9.Instance = TIM9;
-  htim9.Init.Prescaler = 167;
+  htim9.Init.Prescaler = 41999;
   htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim9.Init.Period = 1000;
   htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1877,14 +1916,14 @@ static void MX_TIM9_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 1000;
+  sConfigOC.Pulse = 300;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.Pulse = 2000;
+  sConfigOC.Pulse = 600;
   if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
@@ -2080,81 +2119,149 @@ void set_pwm_off(void){
 	TIM1->CCR3 = 0;
 }
 
-float av_start_angle;
+
 void step_through_pole_angles(void){
-	uint16_t pole_angles[N_PHASES * N_POLES];
+
 	normal_pwm_update = false;
 	set_pwm_off();
 	HAL_Delay(100);
+
+	const uint32_t poles_max = 25;
+	uint32_t EncVal[poles_max];
 	uint32_t step_through_amp = 5 * PWM_1PERCENT;
-	for (uint8_t pole = 0; pole < N_POLES ; pole++){
-		for (uint8_t ABC = 0; ABC < N_PHASES ; ABC++){
+	uint8_t ABC = 0;
+
+
+	// --- DETERMINE INVERT
+	for (ABC = 0; ABC < N_PHASES ; ABC++){
+		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+		set_pwm_off();
+		if (ABC==0){
+			TIM1->CCR1 = step_through_amp;
+		}
+		else if (ABC==1){
+			TIM1->CCR2 = step_through_amp;
+		}
+		else {
+			TIM1->CCR3 = step_through_amp;
+		}
+		HAL_Delay(200);
+		EncVal[ABC] = TIM8->CNT;
+	}
+	int32_t delta_EncVal = EncVal[2] - EncVal[1];
+	if (delta_EncVal > ENC_STEPS_HALF) {
+		delta_EncVal - ENC_STEPS;
+	}
+	else if (delta_EncVal < -ENC_STEPS_HALF){
+		delta_EncVal + ENC_STEPS;
+	}
+	if (delta_EncVal < 0){
+		INVERT = 1; //SET MOTOR SPECIFIC VALUE
+	}
+	else{
+		INVERT = 0; //SET MOTOR SPECIFIC VALUE
+	}
+
+	set_pwm_off();
+	TIM1->CCR1 = step_through_amp;
+	HAL_Delay(200);
+
+	// --- DETERMINE N_POLES
+	uint8_t BCA = 0;
+	int32_t counter = 0;
+	bool done = false;
+
+	for (int u = 0 ; u < poles_max; u++){
+	//while (!done){
+		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+		for (BCA = 0; BCA < N_PHASES ; BCA++){
 			set_pwm_off();
-			if (ABC==0){
+			HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+			if (BCA==0){
+				if(INVERT){
+					TIM1->CCR3 = step_through_amp;
+				}
+				else {
+					TIM1->CCR2 = step_through_amp;
+				}
+			}
+			else if (BCA==1){
+				if(INVERT){
+					TIM1->CCR2 = step_through_amp;
+				}
+				else{
+					TIM1->CCR3 = step_through_amp;
+				}
+			}
+			else {
 				TIM1->CCR1 = step_through_amp;
 			}
-			else if (ABC==1){
-				if (INVERT){
-					TIM1->CCR3 = step_through_amp;
-				}
-				else{
-					TIM1->CCR2 = step_through_amp;
-				}
-
-			}
-			else {
-				if (INVERT){
-					TIM1->CCR2 = step_through_amp;
-				}
-				else{
-					TIM1->CCR3 = step_through_amp;
-				}
-			}
 			HAL_Delay(200);
-			pole_angles[pole * N_PHASES + ABC]=TIM8->CNT;
-
-
-
-			uint8_t buf[300];
-			buf[0] = '\0';
-			sprintf((char*)buf_msg, "[step_through_pole_angles] pole: %d ABC: %d angle: %d \r\n", pole, ABC, TIM8->CNT);
-			if (strlen(buf_msg) + strlen(buf_msgs) < 100){
-				strcat(buf_msgs, buf_msg);
-			}
-			else {
-				buf_msgs[0] = '#';
-			}
-			if (buf_msgs[0] != '\0'){
-				strcat(buf, buf_msgs);
-				buf_msgs[0] = '\0';
-			}
-			//HAL_UART_Transmit_IT(&huart3, buf, strlen((char*)buf)); //WORKS but replaced by DMA below
-			huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
-			HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)buf, (uint32_t)&huart3.Instance->DR, strlen(buf));
-
 		}
+		EncVal[counter] = TIM8->CNT;
+
+
+		int32_t low_bracket = EncVal[counter] - 50; // note can be negative //todo still a problem when it's right around 0!
+		int32_t high_bracket = EncVal[counter] + 50; // note can be >ENC_STEPS
+
+
+		char local_buf[300];
+		local_buf[0] = '\0';
+		sprintf(buf_msg, "[step_through_pole_angles] array: %d counter: %d Enc: %d \r\n", (int)EncVal[counter], (int)counter, (int)TIM8->CNT);
+		if (strlen(buf_msg) + strlen(buf_msgs) < 100){
+			strcat(buf_msgs, buf_msg);
+		}
+		else {
+			buf_msgs[0] = '#';
+		}
+		if (buf_msgs[0] != '\0'){
+			strcat(local_buf, buf_msgs);
+			buf_msgs[0] = '\0';
+		}
+		//HAL_UART_Transmit_IT(&huart3, local_buf, strlen((char*)local_buf)); //WORKS but replaced by DMA below
+		huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+		HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)local_buf, (uint32_t)&huart3.Instance->DR, strlen(local_buf));
+
+
+		if (counter > 0 && high_bracket > EncVal[0] && low_bracket < EncVal[0]){
+			N_POLES = counter ; //SET MOTOR SPECIFIC VALUE
+			//done = true;
+			break;
+		}
+		counter ++;
 	}
 	set_pwm_off();
-	normal_pwm_update = true;
 
-	float sum = 0.0f;
-	float enc_steps_per_A2B = (float)ENC_STEPS / (float)(N_POLES * N_PHASES);
-	float enc_steps_per_A2A = (float)ENC_STEPS / (float)N_POLES;
-	for (uint8_t i = 0; i < N_POLES * N_PHASES ; i++){
-		float reduced_pole_angle = pole_angles[i] - i * enc_steps_per_A2B ;//should be 95.238=ENC_STEPS/21 = ENC_STEPS/ (N_POLES * N_PHASES)
-		if (reduced_pole_angle > -ENC_STEPS_HALF){
-			sum += reduced_pole_angle;
-		}
-		else{
-			sum += reduced_pole_angle + ENC_STEPS;
-		}
-		av_start_angle = sum / (float)(N_POLES * N_PHASES);
-		while(av_start_angle > enc_steps_per_A2A){
-			av_start_angle -= enc_steps_per_A2A;
-		}
-		//float av_angle_first_A =
-
+	// --- DETERMINE phase0
+	int32_t ENCpPOLE_1000 = ((int32_t)ENC_STEPS * 1000) / (int32_t)N_POLES;
+	int32_t acc_Enc0_1000 = 0;
+ 	for (int i = 0; i < N_POLES ; i++){
+		acc_Enc0_1000 += ((int32_t)EncVal[i]*1000) % ENCpPOLE_1000;
 	}
+	phase0 = (float) acc_Enc0_1000 / 1000.0f / (float)ENC_STEPS * PI2; //SET MOTOR SPECIFIC VALUE // * (float) N_POLES/ (float) N_POLES cancels out
+	//todo this calculation gets into trouble when phase shift is close to 0 because the mod operation may give vastly different results !!!
+
+	char local_buf[300];
+	local_buf[0] = '\0';
+	sprintf(buf_msg, "MOTOR CHARACTERISTIC: INVERT: %d N_POLES: %d phase0: %d \r\n", (int)INVERT, (int)N_POLES, (int)(phase0*100.0f));
+	if (strlen(buf_msg) + strlen(buf_msgs) < 100){
+		strcat(buf_msgs, buf_msg);
+	}
+	else {
+		buf_msgs[0] = '#';
+	}
+	if (buf_msgs[0] != '\0'){
+		strcat(local_buf, buf_msgs);
+		buf_msgs[0] = '\0';
+	}
+	//HAL_UART_Transmit_IT(&huart3, local_buf, strlen((char*)local_buf)); //WORKS but replaced by DMA below
+	huart3.Instance->CR3 |= USART_CR3_DMAT; //enabel dma as we disable in callback so uart can be used for something else
+	HAL_DMA_Start_IT(&hdma_usart3_tx, (uint32_t)local_buf, (uint32_t)&huart3.Instance->DR, strlen(local_buf));
+	HAL_Delay(200);
+
+
+	set_pwm_off();
+	normal_pwm_update = true;
 
 
 }
@@ -2658,8 +2765,6 @@ void update_pwm(void){
 
 }
 
-
-
 ////called every second step of the quadrature encoder was used for pwm update in past
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){ // see https://community.st.com/s/question/0D50X00009XkWUpSAN/encoder-mode-and-rotary-encoder
@@ -2756,6 +2861,8 @@ void fast_control_task(void){
 
 	// sw current limit switch off
 	static uint32_t I_lim_exceeded_counter = 0;
+	static uint32_t T_ESC_lim_exceeded_counter = 0;
+	static uint32_t T_MOTOR_lim_exceeded_counter = 0;
 	if (fast_I_tot > I_LIM){
 		I_lim_exceeded_counter++;
 	}
@@ -2763,6 +2870,24 @@ void fast_control_task(void){
 		I_lim_exceeded_counter = 0;
 	}
 	if (I_lim_exceeded_counter > I_LIM_MAX_COUNT){
+		sw_enable_pwm = false;
+	}
+	if (av_ESC_TEMP > T_ESC_LIM){
+		T_ESC_lim_exceeded_counter++;
+	}
+	else {
+		T_ESC_lim_exceeded_counter = 0;
+	}
+	if (T_ESC_lim_exceeded_counter > T_LIM_MAX_COUNT){
+		sw_enable_pwm = false;
+	}
+	if (av_MOT_TEMP > T_MOTOR_LIM){
+		T_MOTOR_lim_exceeded_counter++;
+	}
+	else {
+		T_MOTOR_lim_exceeded_counter = 0;
+	}
+	if (T_MOTOR_lim_exceeded_counter > T_LIM_MAX_COUNT){
 		sw_enable_pwm = false;
 	}
 
@@ -2798,7 +2923,7 @@ void fast_control_task(void){
 	static uint32_t last_tim5_cnt = 0 ;
 	if (control_mode == position_control){
 
-		float t = (float)((TIM5->CNT - last_tim5_cnt) / 100) / 1000.0f;
+		float t = (float)((TIM5->CNT - last_tim5_cnt) ) / 100000.0f;
 
 		int32_t desired_EncVal = pos_offset + pos_amp * sin(6.28f * pos_freq * t);
 
@@ -2831,7 +2956,7 @@ void fast_control_task(void){
 		amp = raw_amp;
 
 		if (buf_msgs[0] == '\0'){
-			sprintf((char*)buf_msg, "[HEART] raw_a: %d %d %d Enc_tot: %d a: %d f: %d lim: %d off: %d g: %d\r\n",
+			sprintf(buf_msg, "[HEART] raw_a: %d %d %d Enc_tot: %d a: %d f: %d lim: %d off: %d g: %d\r\n",
 					(int)((float)(Enc_Val_total - desired_EncVal) * 0.0005f*1000.0f),
 					(int)(raw_amp*1000),
 					(int)(raw_amp_check*1000),
@@ -2855,6 +2980,10 @@ void fast_control_task(void){
 void slow_control_task(void){
 	//can communication update
 
+}
+
+float convert2SI_strain0(uint32_t strain){
+	return (float) ((int32_t)strain - STRAIN0_OFFSET) * STRAIN0_NperINT;
 }
 
 void keyboard_intake(void){
@@ -3020,7 +3149,6 @@ void print_prep_task(int fast_control_task_counter){
 
 	int pos = strlen(buf);
 	int left  = BUF_LEN - pos;
-	int leftt;
 	int nn;
 #define ADD_VAL(fmt, val)                    \
 		nn = snprintf(buf+pos, left, fmt, val);  \
@@ -3033,21 +3161,26 @@ void print_prep_task(int fast_control_task_counter){
 		sprintf(buf, "tx: %c %4d %4d %4d %4d ", ch, tx_msg[0],rx_msg[1],rx_msg[2],rx_msg[3]);//70000ns
 		break;
 	case 1:
-		ADD_VAL(" a:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_U));
-		ADD_VAL(" b:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_U));
-		ADD_VAL(" c:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_U));
+		//ADD_VAL(" a:%5d", (int)HAL_ADCEx_InjectedGetValue (&hadc1, RANK_U));
+		//ADD_VAL(" b:%5d", (int)HAL_ADCEx_InjectedGetValue (&hadc2, RANK_U));
+		//ADD_VAL(" c:%5d", (int)HAL_ADCEx_InjectedGetValue (&hadc3, RANK_U));
 		//ADD_VAL(" p0:%4.2f", phase0);
+		//ADD_VAL(" ps:%4.2f", phase_shift);
 		break;
 	case 2:
-		//ADD_VAL(" ps:%4.2f", phase_shift);
-		ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
+		//ADD_VAL(" TM:%4d", (int) av_MOT_TEMP);
+		ADD_VAL(" ENC:%4d", (int) TIM8->CNT);
+		ADD_VAL(" pi:%4d", pole_phase_int);
 		break;
 	case 3:
 		//ADD_VAL(" a:%4.2f", amp);
 		//ADD_VAL(" a:%5d", (int)(amp*100.0f));
-		ADD_VAL(" A:%5d",HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I)- (int)A_mean);
-		ADD_VAL(" B:%5d",HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I)- (int)B_mean);
-		ADD_VAL(" C:%5d",HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I)- (int)C_mean);
+		//ADD_VAL(" A:%5d", (int)HAL_ADCEx_InjectedGetValue (&hadc1, RANK_I)- (int)A_mean);
+		//ADD_VAL(" B:%5d", (int)HAL_ADCEx_InjectedGetValue (&hadc2, RANK_I)- (int)B_mean);
+		//ADD_VAL(" C:%5d", (int)HAL_ADCEx_InjectedGetValue (&hadc3, RANK_I)- (int)C_mean);
+		ADD_VAL(" P:%4d", (int)N_POLES);
+		ADD_VAL(" I:%4d", (int)INVERT);
+		ADD_VAL(" p0:%4d", (int)(phase0*100.0f));
 		break;
 	case 4:
 		//ADD_VAL(" v:%6.2f", omega);
@@ -3068,10 +3201,10 @@ void print_prep_task(int fast_control_task_counter){
 		//ADD_VAL(" Vref:%5d", adc1_buf[RANK_CONT_Vref-1]);
 		//ADD_VAL(" Vbat:%5d", adc1_buf[RANK_CONT_Vbat-1]);
 		ADD_VAL(" Vbus:%5d", adc1_buf[RANK_CONT_Vbus-1]);
-		ADD_VAL(" fVbus:%5d", fast_Vbus);
+		ADD_VAL(" fVbus:%5d",  (int)fast_Vbus);
 
 
-		//ADD_VAL(" pi:%4d", field_phase_int);
+
 		break;
 	case 8:
 		//ADD_VAL(" dc:%4d", (int)(direct_component*100.0f));
@@ -3107,10 +3240,10 @@ void print_prep_task(int fast_control_task_counter){
 		ADD_VAL(" TE:%4d", (int) av_ESC_TEMP);
 		break;
 	case 14:
-		ADD_VAL(" It:%4.2f", fast_I_tot);
+		ADD_VAL(" It:%4d", (int) (fast_I_tot*100.0f));
 		break;
 	case 15:
-		ADD_VAL(" F0:%4d", (int) fast_STRAIN0);
+		ADD_VAL(" F0:%4dN", (int) (convert2SI_strain0(fast_STRAIN0)));
 		break;
 	case 16:
 		ADD_VAL(" ps:%4.2f", phase_shift);
@@ -3128,8 +3261,11 @@ void print_prep_task(int fast_control_task_counter){
 			sprintf(buf_add, "* >50C on MOTOR"); strcat(buf, buf_add);
 		}
 
-		if (fast_STRAIN0 < 2170){
+		if (convert2SI_strain0(fast_STRAIN0) < -100){
 			sprintf(buf_add, "* -100N force"); strcat(buf, buf_add);
+		}
+		if (convert2SI_strain0(fast_STRAIN0) > 100){
+			sprintf(buf_add, "* 100N force"); strcat(buf, buf_add);
 		}
 		break;
 
@@ -3231,266 +3367,7 @@ void timing_party(){
 	DB1L;
 	DB1H;
 
-	if (0){
 
-		DB1L;//40ns
-		int t11 = 2345;//10 (subtract 40 from the 60 below and devide by 2 because we do 2 operations)
-		int t12 = 1234;//10
-		DB1H;//60ns
-		int t13 = t11+t12;//40
-
-		DB1L;//80ns
-		int t21 = 2345;//0
-		int t22 = 1234;//0
-		DB1H;//40ns
-		int t23 = t21/t22;//60
-
-		DB1L;//100
-		float t31 = 2345;//20
-		float t32 = 1234;//20
-		DB1H;//80
-		float t33 = t31+t32;//160
-
-		DB1L;//200
-		float t41 = 2345;//20
-		float t42 = 1234;//20
-		DB1H;//80
-		float t43 = t41/t42;//110
-
-		DB1L;//150
-		float t51 = 2345;//20
-		int t52 = 1234;//10
-		DB1H;//70
-		float t53 = t51/(float)t52;//140
-
-		DB1L;//180
-		DB1H;
-		DB1L;
-		DB1H;
-
-
-
-		DB1L;
-		int8_t t71 = 2345;//10
-		int8_t t72 = 1234;//10
-		DB1H;//50
-		int8_t t73 = t71+t72;//40
-
-		DB1L;//80
-		int16_t t61 = 2345;//10
-		int16_t t62 = 1234;//
-		DB1H;//
-		int16_t t63 = t61+t62;//40
-
-
-		DB1L;
-		int32_t t81 = 2345;//10
-		int32_t t82 = 1234;//
-		DB1H;//
-		int32_t t83 = t81+t82;//40
-
-
-		DB1L;
-		int64_t t91 = 2345;//30
-		int64_t t92 = 1234;//
-		DB1H;//100
-		int64_t t93 = t91+t92;//60 <<<<<<<<<<<< all int have same speed but 64 is much slower
-
-
-		DB1L;//100
-		DB1H;
-		DB1L;
-		DB1H;
-
-		DB1L;
-		double r91 = 2345;//70
-		double r92 = 1234;//70
-		DB1H;//180
-		double r93 = r91+r92;//860
-
-		DB1L;//900
-		float r81 = 2345;//20
-		//int t52 = 1234;//
-		DB1H;//60
-		float r83 = 3.1234 * r81;//950 <<<<<<<<<<<<<<< super slow
-
-		DB1L;//1000
-		float r71 = 2345;//
-		//int t52 = 1234;//
-		DB1H;//60
-		float r73 = 3.1234f * r71; // 80 <<<<<<<<<<<< super important to put f behind floating point number
-
-		DB1L;//120
-		DB1H;
-		DB1L;
-		DB1H;
-
-		DB1L;
-		int e11 = 123;
-		int e12 = 234;
-		int e13 =0;
-		DB1H;//140
-		e13 = e11 + e12;
-		e13 = e13 + 345;
-		DB1L;//100
-		e13 = e11 + e12 + 345;// <<<<<<one line is faster than 2 lines as above !!!
-		DB1H;//80
-		e13 = e11 + e12 + 345 + 456 + 567; //  <<<<<NO additional time for writing out all the numbers !!!!!
-		DB1L;//80
-		e13 = e11 + e12;
-		e13 += 345; //+= just as = _+
-		DB1H;//110
-		e13 = e11 + e12;//40
-		e13 = e13 + PWM_1PERCENT;//30
-		DB1L;//110
-		e13 = e11 + e12; //40
-		e13 = e13 + rotation_counter; //100 <<<<<<<<getting a variable takes much longer than having define !!!!
-
-		DB1L;//180
-		DB1H;
-		DB1L;
-		DB1H;
-	}
-
-	if (0){
-
-		float c;
-		DB1L;
-		c = cos(0.1f);
-		DB1H;//60
-		c = cos(0.1);
-		DB1L;//60
-		c = sqrt(0.1f);
-		DB1H;//60
-		c = pow(0.1f,0.5f);
-		DB1L;//60
-		c = pow(0.1f,0.5);
-		DB1H;//60
-		c = sin_lookup[4];
-		DB1L;//60
-		//c = cos(c);
-		DB1H;//10000ns >>>>>>>>>>>>>>> Doing calc on variable as opposed to fix takes forever
-		c = sin_lookup[(int)(c*100)];
-		DB1L;//300ns
-		c = sin_lookup[(int)(c*100.0)];
-		DB1H;//1100ns
-		c = sin_lookup[(int)(c*100.0f)];
-		DB1L;//180ns
-
-		DB1H;
-
-		DB1L;//60
-		DB1H;
-		DB1L;
-		DB1H;
-	}
-
-	if (0){
-		int ii;
-		float ff;
-
-		DB1L;
-		ii = 1;
-		ii = 2;
-		ii = 3;//10
-		DB1H;//80
-
-		DB1L;
-		for (int i=0; i<3; i++){
-			ii = i;
-		}
-		DB1H;//450     //<<<<<<<<<<<<<<< What is happening here??? loop takes for ever
-
-		DB1L;
-		for (float i=0.0f; i<1.0f; i+=0.3f){
-			ff = i;
-		}
-		DB1H;//800
-
-		//	DB1L;
-		//	for (float i=0.0f; i<1.0f; i+=0.3f){
-		//		ff = sin(i);
-		//	}
-		//	DB1H;
-
-		DB1L;
-		for (int i=0; i<1; i++){
-			ff = sin(0.1f);
-		}
-		DB1H;//400 in next measurement only 250ns --- how can this be faster than the assignment loop - maybe because we always assign same.
-
-
-
-		DB1L;
-		for (int i=0; i<3; i++){
-			ff = sin_lookup[i];
-		}
-		DB1H;//550  <<<<<<<<<< Lookup is slower than calc --- double check because we do only same calc up there
-
-		DB1L;
-		for (int i=0; i<1; i++){
-			ff = sin(0.1f*(float)i);
-		}
-		DB1H;//2000ns !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! for one calc only
-
-		DB1L;
-		DB1H;
-		DB1L;
-		DB1H;
-	}
-
-
-	if (0) {
-
-		DB1L;
-		float r = 2345;//30
-		float rr = 1234;//30
-		DB1H;//100
-		float rrr = r+rr;//40
-
-		DB1L;//80
-		register float r1 = 2345;//0
-		register float rr1 = 1234;//0
-		DB1H;//40
-		register float rrr1 = r1+rr1;//0 <<<<<<<<<<<<,OK this is not resolvable anymore
-
-		DB1L;//40
-		float r2 = 2345;//20
-		float rr2 = 1234;//20
-		DB1H;//100
-		float rrr2 = r2+rr2;//40
-
-		DB1L;//80
-		DB1H;
-		DB1L;
-		DB1H;
-
-	}
-
-	if (1) {
-
-		DB1L;
-		bool v = true;//
-		int ff = 1;
-		DB1H;//100
-		if (v){
-			int ff = 0;
-		}
-
-		DB1L;//80
-		int vv = 1;
-		int fff = 1;
-		DB1H;//40
-		fff *= vv;//0 <<<<<<<<<<<<,OK this is not resolvable anymore
-
-
-
-		DB1L;//80
-		DB1H;
-		DB1L;
-		DB1H;
-
-	}
 
 	// --- MORE LEARINGS
 	// - avoid fmod - 4000ns
